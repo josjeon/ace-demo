@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-control-galileo-e2e"
+version = "0.1.0"
+description = "Standalone banking demo for Agent Control evaluations emitted as Galileo control spans."
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "galileo @ file:///Users/namrataghadi/code/galileo-python",
+  "agent-control-sdk[galileo] @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=sdks/python",
+  "agent-control-models @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=models",
+  "agent-control-engine @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=engine",
+  "agent-control-telemetry @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=telemetry",
+  "agent-control-evaluators @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=evaluators/builtin",
+  "agent-control-evaluator-galileo @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=evaluators/contrib/galileo",
+  "httpx>=0.26.0",
+  "streamlit>=1.36",
+]
+
+[tool.setuptools]
+py-modules = [
+  "banking_streamlit_app",
+  "common",
+  "run_demo",
+  "setup_controls",
+]
