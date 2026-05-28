@@ -8,7 +8,7 @@ For a step-by-step Forward Deploy Engineer runbook, including manual Console set
 
 - Agent Control is installed and running as a remote service in the Galileo cluster.
 - `GalileoLogger` auto-registers the Agent Control sink/provider when the Agent Control SDK is importable.
-- Real `evaluate_controls(...)` calls emit `ControlExecutionEvent`s for server-side controls.
+- Real `@control()` decorator calls emit `ControlExecutionEvent`s for server-side controls.
 - Evaluation uses the runtime JWT flow bound to the target Galileo log stream.
 - The remote `galileo.luna` evaluator invokes Galileo's `/scorers/invoke` API directly.
 - The active Galileo workflow provides trace/span context to Agent Control through the current `GalileoLogger` bridge.
@@ -53,7 +53,12 @@ The demo expects these controls to be created in Console and bound to the Galile
 - `demo-observe-luna-transfer-request`: denies prompt-injection attempts in the pre-LLM banking request with the Galileo Luna `prompt_injection_luna` scorer.
 - `demo-steer-large-transfer-2fa`: steers transfers of `$10,000` or more by returning retry flags that set `verified_2fa=true`.
 
-The current Console form does not expose `step_names`, so these controls intentionally scope only by `step_types` and `stages`. With no `step_names`, Agent Control evaluates the control for every matching step type/stage and then relies on the evaluator condition to decide whether the control matches.
+Create the controls at the log stream level in Console. The app uses Agent Control's `@control()` decorator, so control matching sees the decorated function names as step names:
+
+- LLM function: `draft_transfer_plan`
+- Tool function: `process_wire_transfer`
+
+Do the step-name filtering in the control UI, for example with regexes that match those function names. The demo does not pass `steps`, `llm_step_name`, or `tool_step_name` through `agent_control.init(...)`.
 
 `run_demo.py` registers the demo agent with the resolved log stream target, then verifies the effective target controls through Agent Control before evaluating. It does not create or update controls unless `--setup-controls` is passed explicitly.
 
@@ -145,7 +150,9 @@ Force a hard deny:
 
 ## 4. Interactive Streamlit App
 
-`banking_streamlit_app.py` is an interactive version of the same standalone banking demo. It does not use Strands or hooks. It uses the same `evaluate_controls(...)` path as `run_demo.py`, displays each evaluation stage, shows steering retries, and prints the Galileo trace metadata created by the run.
+`banking_streamlit_app.py` is an interactive version of the same standalone banking demo. It does not use Strands or hooks. It uses the same `@control()` decorator path as `run_demo.py`, displays each evaluation stage, shows steering retries, and prints the Galileo trace metadata created by the run.
+
+The app uses the same decorated functions as the CLI run, so keep the log-stream-level controls in Console aligned with `draft_transfer_plan` and `process_wire_transfer`.
 
 Streamlit is installed by default when you run `$DEMO_PYTHON -m pip install .`.
 

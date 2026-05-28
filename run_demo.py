@@ -5,11 +5,12 @@ import argparse
 import asyncio
 import json
 import os
-from typing import Any, Literal, cast
+from typing import Any
 from uuid import uuid4
 from datetime import UTC, datetime, timedelta
 
 import httpx
+from agent_control import ControlSteerError, ControlViolationError, control
 
 from common import (
     DEFAULT_AGENT_CONTROL_URL,
@@ -26,6 +27,12 @@ from setup_controls import control_specs, ensure_demo_controls
 
 LUNA_CONTROL_NAME = os.environ.get("AGENT_CONTROL_LUNA_CONTROL_NAME", "demo-observe-luna-transfer-request")
 DEFAULT_BANKING_PROMPT = "Wire $15,000 to Horizon Robotics in the United Kingdom for invoice INV-2026-014."
+
+
+def _agent_control_tool(func: Any) -> Any:
+    """Mark a function as a tool before @control() infers its step type."""
+    func.tool_name = func.__name__
+    return func
 
 
 def parse_args() -> argparse.Namespace:
@@ -184,7 +191,8 @@ def _compute_fraud_score(transfer: dict[str, Any], override: float | None) -> fl
     return 0.1
 
 
-def _demo_llm_response(prompt: str, transfer: dict[str, Any]) -> str:
+@control()
+async def draft_transfer_plan(prompt: str, transfer: dict[str, Any]) -> str:
     return (
         "I parsed a wire-transfer request and will send it through compliance controls before execution. "
         f"Transfer: ${transfer['amount']:,.2f} to {transfer['recipient_name']} "
@@ -192,17 +200,28 @@ def _demo_llm_response(prompt: str, transfer: dict[str, Any]) -> str:
     )
 
 
-def _process_wire_transfer(transfer: dict[str, Any]) -> dict[str, Any]:
+@control()
+@_agent_control_tool
+async def process_wire_transfer(
+    *,
+    amount: float,
+    destination_country: str,
+    recipient_name: str,
+    verified_2fa: bool = False,
+    manager_approved: bool = False,
+    justification: str | None = None,
+    fraud_score: float | None = None,
+) -> dict[str, Any]:
     return {
         "status": "completed",
-        "transaction_id": f"TXN-{abs(hash((transfer['recipient_name'], transfer['amount']))) % 100000:05d}",
-        "amount": transfer["amount"],
-        "destination_country": transfer["destination_country"],
-        "recipient_name": transfer["recipient_name"],
-        "verified_2fa": transfer.get("verified_2fa", False),
-        "manager_approved": transfer.get("manager_approved", False),
-        "fraud_score": transfer.get("fraud_score"),
-        "justification": transfer.get("justification"),
+        "transaction_id": f"TXN-{abs(hash((recipient_name, amount))) % 100000:05d}",
+        "amount": amount,
+        "destination_country": destination_country,
+        "recipient_name": recipient_name,
+        "verified_2fa": verified_2fa,
+        "manager_approved": manager_approved,
+        "fraud_score": fraud_score,
+        "justification": justification,
     }
 
 
@@ -227,62 +246,10 @@ def _render_final_answer(
     )
 
 
-def _print_evaluation_summary(label: str, result: Any) -> None:
-    matches = result.matches or []
-    errors = result.errors or []
-    print(f"{label}: is_safe={result.is_safe} matches={len(matches)} errors={len(errors)}")
-    for match in matches:
-        print(
-            "  "
-            f"control={match.control_name} action={match.action} "
-            f"matched={match.result.matched} confidence={match.result.confidence}"
-        )
-    for error in errors:
-        print(
-            "  "
-            f"error control={error.control_name} message={error.result.error or error.result.message or 'unknown'}"
-        )
-
-
-def _first_deny_match(result: Any) -> Any | None:
-    for match in result.matches or []:
-        if getattr(match, "action", None) == "deny":
-            return match
-    return None
-
-
-def _find_deny_match(result: Any, control_name: str) -> Any | None:
-    clone_prefix = f"{control_name}-clone-"
-    for match in result.matches or []:
-        match_name = getattr(match, "control_name", None)
-        name_matches = match_name == control_name or (
-            isinstance(match_name, str) and match_name.startswith(clone_prefix)
-        )
-        if name_matches and getattr(match, "action", None) == "deny":
-            return match
-    return None
-
-
-def _hard_block_message(stage: str, result: Any) -> str | None:
-    deny_match = _first_deny_match(result)
-    if deny_match is None:
-        return None
-
-    result_message = getattr(getattr(deny_match, "result", None), "message", None)
-    reason = result_message or getattr(result, "reason", None) or "A deny control matched."
-    control_name = getattr(deny_match, "control_name", "unknown-control")
-    return f"Execution blocked at {stage} by {control_name}: {reason}"
-
-
-def _first_steer_match(result: Any) -> Any | None:
-    for match in result.matches or []:
-        if getattr(match, "action", None) == "steer":
-            return match
-    return None
-
-
 def _steering_context_message(match: Any) -> str:
     steering_context = getattr(match, "steering_context", None)
+    if isinstance(steering_context, str) and steering_context:
+        return steering_context
     message = getattr(steering_context, "message", None)
     if isinstance(message, str) and message:
         return message
@@ -321,6 +288,22 @@ def _describe_steering(match: Any) -> str:
         steering_data = {"reason": message}
     reason = steering_data.get("reason") or "Additional verification required."
     return f"{getattr(match, 'control_name', 'unknown-control')}: {reason}"
+
+
+def _control_exception_message(stage: str, exc: ControlViolationError) -> str:
+    return f"Execution blocked at {stage} by {exc.control_name}: {exc.message}"
+
+
+def _control_exception_rows(exc: ControlViolationError | ControlSteerError, action: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "control": exc.control_name,
+            "action": action,
+            "matched": True,
+            "confidence": None,
+            "message": exc.message,
+        }
+    ]
 
 
 def _collect_control_spans(workflow: Any) -> list[Any]:
@@ -721,20 +704,6 @@ async def _verify_bound_controls(
     return luna_config
 
 
-async def _evaluate_step(agent_name: str, step: Any, stage: Literal["pre", "post"]) -> Any:
-    from agent_control.evaluation import evaluate_controls
-
-    return await evaluate_controls(
-        step_name=step.name,
-        input=step.input,
-        output=step.output,
-        context=getattr(step, "context", None),
-        step_type=cast(Literal["tool", "llm"], step.type),
-        stage=stage,
-        agent_name=agent_name,
-    )
-
-
 async def _fetch_json(
     client: httpx.AsyncClient,
     url: str,
@@ -1025,7 +994,6 @@ async def _query_trends(
 async def _run(args: argparse.Namespace) -> None:
     _configure_galileo_environment(args)
     import agent_control
-    from agent_control_models import Step
     from galileo.logger.logger import GalileoLogger
 
     logger = GalileoLogger(project=args.project, log_stream=args.log_stream, mode=args.mode)
@@ -1065,36 +1033,6 @@ async def _run(args: argparse.Namespace) -> None:
         server_url=args.server_url,
         api_key=resolve_agent_control_api_key(),
         api_key_header=resolve_agent_control_api_key_header(),
-        steps=[
-            {
-                "type": "llm",
-                "name": "draft_transfer_plan",
-                "description": "Deterministic banking transfer planning step.",
-                "input_schema": {"prompt": {"type": "string"}},
-                "output_schema": {"plan": {"type": "string"}},
-            },
-            {
-                "type": "tool",
-                "name": "process_wire_transfer",
-                "description": "Deterministic banking wire transfer tool.",
-                "input_schema": {
-                    "amount": {"type": "number"},
-                    "destination_country": {"type": "string"},
-                    "recipient_name": {"type": "string"},
-                    "fraud_score": {"type": "number"},
-                    "verified_2fa": {"type": "boolean"},
-                    "manager_approved": {"type": "boolean"},
-                    "justification": {"type": "string"},
-                },
-                "output_schema": {
-                    "status": {"type": "string"},
-                    "transaction_id": {"type": "string"},
-                    "amount": {"type": "number"},
-                    "destination_country": {"type": "string"},
-                    "recipient_name": {"type": "string"},
-                },
-            },
-        ],
         observability_enabled=True,
         observability_sink_name="registered",
         target_type=target_type,
@@ -1114,6 +1052,8 @@ async def _run(args: argparse.Namespace) -> None:
     print(f"Agent Control server_url: {args.server_url.rstrip('/')}")
     print(f"Agent Control runtime_auth_mode: {args.runtime_auth_mode}")
     print(f"Agent Control target: {target_type}:{target_id}")
+    print(f"Agent Control LLM function: {draft_transfer_plan.__name__}")
+    print(f"Agent Control tool function: {process_wire_transfer.__name__}")
     print(f"Galileo project_id: {logger.project_id}")
     print(f"Galileo log_stream_id: {logger.log_stream_id}")
     print(f"Galileo session_id: {session_id}")
@@ -1131,23 +1071,28 @@ async def _run(args: argparse.Namespace) -> None:
     try:
         # The current Galileo bridge gets trace/span IDs from the active logger parent.
         # Keep the workflow active while Agent Control emits evaluation events.
-        llm_pre_step = Step(type="llm", name="draft_transfer_plan", input=args.prompt)
-        llm_pre_result = await _evaluate_step(args.agent_name, llm_pre_step, "pre")
-        _print_evaluation_summary("llm/pre", llm_pre_result)
-        if args.expect_luna_deny and _find_deny_match(llm_pre_result, LUNA_CONTROL_NAME) is None:
-            raise RuntimeError(
-                f"Expected {LUNA_CONTROL_NAME} to match with action=deny during llm/pre, "
-                "but no Luna deny match was returned."
-            )
-        blocked_output = _hard_block_message("llm/pre", llm_pre_result)
+        try:
+            draft_response = await draft_transfer_plan(args.prompt, transfer)
+        except ControlViolationError as exc:
+            if args.expect_luna_deny and exc.control_name != LUNA_CONTROL_NAME:
+                raise RuntimeError(
+                    f"Expected {LUNA_CONTROL_NAME} to deny during llm/pre, "
+                    f"but {exc.control_name} denied instead."
+                ) from exc
+            blocked_output = _control_exception_message("llm/pre", exc)
+        else:
+            if args.expect_luna_deny:
+                raise RuntimeError(
+                    f"Expected {LUNA_CONTROL_NAME} to match with action=deny during llm/pre, "
+                    "but the decorated LLM function completed."
+                )
 
         if blocked_output is None:
-            draft_response = _demo_llm_response(args.prompt, transfer)
             logger.add_llm_span(
                 input=args.prompt,
                 output=draft_response,
                 model="demo-rule-based",
-                name="draft_transfer_plan",
+                name=draft_transfer_plan.__name__,
                 metadata={
                     "amount": transfer["amount"],
                     "destination_country": transfer["destination_country"],
@@ -1158,43 +1103,32 @@ async def _run(args: argparse.Namespace) -> None:
             steering_history: list[str] = []
             tool_input = transfer
             for attempt in range(1, args.max_steer_attempts + 1):
-                tool_pre_step = Step(type="tool", name="process_wire_transfer", input=tool_input)
-                tool_pre_result = await _evaluate_step(args.agent_name, tool_pre_step, "pre")
-                _print_evaluation_summary(f"tool/pre attempt {attempt}", tool_pre_result)
-                blocked_output = _hard_block_message("tool/pre", tool_pre_result)
-                if blocked_output is not None:
+                try:
+                    tool_output = await process_wire_transfer(**tool_input)
+                except ControlSteerError as exc:
+                    steering_history.append(_describe_steering(exc))
+                    tool_input = _apply_steering_context(tool_input, exc)
+                    continue
+                except ControlViolationError as exc:
+                    blocked_output = _control_exception_message(f"tool attempt {attempt}", exc)
                     break
-
-                steer_match = _first_steer_match(tool_pre_result)
-                if steer_match is None:
-                    break
-
-                steering_history.append(_describe_steering(steer_match))
-                tool_input = _apply_steering_context(tool_input, steer_match)
+                logger.add_tool_span(
+                    input=json.dumps(tool_input, sort_keys=True),
+                    output=json.dumps(tool_output, sort_keys=True),
+                    name=process_wire_transfer.__name__,
+                    metadata={
+                        "amount": tool_input["amount"],
+                        "destination_country": tool_input["destination_country"],
+                        "recipient_name": tool_input["recipient_name"],
+                        "steering_attempts": len(steering_history),
+                    },
+                )
+                break
             else:
                 blocked_output = (
                     "Execution blocked at tool/pre: steering did not converge within "
                     f"{args.max_steer_attempts} attempts."
                 )
-
-        if blocked_output is None:
-            tool_output = _process_wire_transfer(tool_input)
-            logger.add_tool_span(
-                input=json.dumps(tool_input, sort_keys=True),
-                output=json.dumps(tool_output, sort_keys=True),
-                name="process_wire_transfer",
-                metadata={
-                    "amount": tool_input["amount"],
-                    "destination_country": tool_input["destination_country"],
-                    "recipient_name": tool_input["recipient_name"],
-                    "steering_attempts": len(steering_history),
-                },
-            )
-
-            tool_post_step = Step(type="tool", name="process_wire_transfer", input=tool_input, output=tool_output)
-            tool_post_result = await _evaluate_step(args.agent_name, tool_post_step, "post")
-            _print_evaluation_summary("tool/post", tool_post_result)
-            blocked_output = _hard_block_message("tool/post", tool_post_result)
 
         if blocked_output is None:
             final_answer = _render_final_answer(draft_response, tool_output, steering_history)

@@ -26,15 +26,13 @@ from run_demo import (
     DEFAULT_BANKING_PROMPT,
     _apply_steering_context,
     _compute_fraud_score,
-    _demo_llm_response,
     _describe_steering,
-    _evaluate_step,
-    _first_steer_match,
-    _hard_block_message,
     _login_with_api_key,
     _parse_transfer_request,
-    _print_evaluation_summary,
-    _process_wire_transfer,
+    _control_exception_message,
+    _control_exception_rows,
+    draft_transfer_plan,
+    process_wire_transfer,
     _render_final_answer,
     _verify_bound_controls,
 )
@@ -88,31 +86,6 @@ async def _validate_galileo_credentials(args: SimpleNamespace) -> None:
         await _login_with_api_key(client, args.api_base_url.rstrip("/"), api_key)
 
 
-def _evaluation_rows(result: Any) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for match in result.matches or []:
-        rows.append(
-            {
-                "control": match.control_name,
-                "action": match.action,
-                "matched": getattr(match.result, "matched", None),
-                "confidence": getattr(match.result, "confidence", None),
-                "message": getattr(match.result, "message", None),
-            }
-        )
-    for error in result.errors or []:
-        rows.append(
-            {
-                "control": error.control_name,
-                "action": "error",
-                "matched": None,
-                "confidence": None,
-                "message": error.result.error or error.result.message or "unknown",
-            }
-        )
-    return rows
-
-
 async def _run_banking_agent(
     *,
     args: SimpleNamespace,
@@ -126,7 +99,7 @@ async def _run_banking_agent(
     await _validate_galileo_credentials(args)
 
     import agent_control
-    from agent_control_models import Step
+    from agent_control import ControlSteerError, ControlViolationError
     from galileo.logger.logger import GalileoLogger
 
     logger = GalileoLogger(project=args.project, log_stream=args.log_stream, mode=args.mode)
@@ -148,30 +121,6 @@ async def _run_banking_agent(
         server_url=args.server_url,
         api_key=resolve_agent_control_api_key(),
         api_key_header=resolve_agent_control_api_key_header(),
-        steps=[
-            {
-                "type": "llm",
-                "name": "draft_transfer_plan",
-                "description": "Deterministic banking transfer planning step.",
-                "input_schema": {"prompt": {"type": "string"}},
-                "output_schema": {"plan": {"type": "string"}},
-            },
-            {
-                "type": "tool",
-                "name": "process_wire_transfer",
-                "description": "Deterministic banking wire transfer tool.",
-                "input_schema": {
-                    "amount": {"type": "number"},
-                    "destination_country": {"type": "string"},
-                    "recipient_name": {"type": "string"},
-                    "fraud_score": {"type": "number"},
-                    "verified_2fa": {"type": "boolean"},
-                    "manager_approved": {"type": "boolean"},
-                    "justification": {"type": "string"},
-                },
-                "output_schema": {"status": {"type": "string"}, "transaction_id": {"type": "string"}},
-            },
-        ],
         observability_enabled=True,
         observability_sink_name="registered",
         target_type=target_type,
@@ -202,19 +151,19 @@ async def _run_banking_agent(
     blocked_output: str | None = None
 
     try:
-        llm_pre_step = Step(type="llm", name="draft_transfer_plan", input=prompt)
-        llm_pre_result = await _evaluate_step(args.agent_name, llm_pre_step, "pre")
-        _print_evaluation_summary("llm/pre", llm_pre_result)
-        events.append({"stage": "llm/pre", "rows": _evaluation_rows(llm_pre_result)})
-        blocked_output = _hard_block_message("llm/pre", llm_pre_result)
+        try:
+            draft_response = await draft_transfer_plan(prompt, transfer)
+            events.append({"stage": "llm", "rows": []})
+        except ControlViolationError as exc:
+            blocked_output = _control_exception_message("llm", exc)
+            events.append({"stage": "llm", "rows": _control_exception_rows(exc, "deny")})
 
         if blocked_output is None:
-            draft_response = _demo_llm_response(prompt, transfer)
             logger.add_llm_span(
                 input=prompt,
                 output=draft_response,
                 model="demo-rule-based",
-                name="draft_transfer_plan",
+                name=draft_transfer_plan.__name__,
                 metadata={
                     "amount": transfer["amount"],
                     "destination_country": transfer["destination_country"],
@@ -224,42 +173,39 @@ async def _run_banking_agent(
 
             tool_input = transfer
             for attempt in range(1, args.max_steer_attempts + 1):
-                tool_pre_step = Step(type="tool", name="process_wire_transfer", input=tool_input)
-                tool_pre_result = await _evaluate_step(args.agent_name, tool_pre_step, "pre")
-                _print_evaluation_summary(f"tool/pre attempt {attempt}", tool_pre_result)
-                events.append(
-                    {
-                        "stage": f"tool/pre attempt {attempt}",
-                        "input": tool_input,
-                        "rows": _evaluation_rows(tool_pre_result),
-                    }
+                try:
+                    tool_output = await process_wire_transfer(**tool_input)
+                    events.append({"stage": f"tool attempt {attempt}", "input": tool_input, "rows": []})
+                except ControlSteerError as exc:
+                    events.append(
+                        {
+                            "stage": f"tool attempt {attempt}",
+                            "input": tool_input,
+                            "rows": _control_exception_rows(exc, "steer"),
+                        }
+                    )
+                    steering_history.append(_describe_steering(exc))
+                    tool_input = _apply_steering_context(tool_input, exc)
+                    continue
+                except ControlViolationError as exc:
+                    blocked_output = _control_exception_message(f"tool attempt {attempt}", exc)
+                    events.append(
+                        {
+                            "stage": f"tool attempt {attempt}",
+                            "input": tool_input,
+                            "rows": _control_exception_rows(exc, "deny"),
+                        }
+                    )
+                    break
+                logger.add_tool_span(
+                    input=json.dumps(tool_input, sort_keys=True),
+                    output=json.dumps(tool_output, sort_keys=True),
+                    name=process_wire_transfer.__name__,
+                    metadata={"steering_attempts": len(steering_history)},
                 )
-                blocked_output = _hard_block_message("tool/pre", tool_pre_result)
-                if blocked_output is not None:
-                    break
-
-                steer_match = _first_steer_match(tool_pre_result)
-                if steer_match is None:
-                    break
-
-                steering_history.append(_describe_steering(steer_match))
-                tool_input = _apply_steering_context(tool_input, steer_match)
+                break
             else:
                 blocked_output = f"Execution blocked: steering did not converge within {args.max_steer_attempts} attempts."
-
-        if blocked_output is None:
-            tool_output = _process_wire_transfer(tool_input)
-            logger.add_tool_span(
-                input=json.dumps(tool_input, sort_keys=True),
-                output=json.dumps(tool_output, sort_keys=True),
-                name="process_wire_transfer",
-                metadata={"steering_attempts": len(steering_history)},
-            )
-            tool_post_step = Step(type="tool", name="process_wire_transfer", input=tool_input, output=tool_output)
-            tool_post_result = await _evaluate_step(args.agent_name, tool_post_step, "post")
-            _print_evaluation_summary("tool/post", tool_post_result)
-            events.append({"stage": "tool/post", "rows": _evaluation_rows(tool_post_result)})
-            blocked_output = _hard_block_message("tool/post", tool_post_result)
 
         if blocked_output is None:
             final_answer = _render_final_answer(draft_response, tool_output, steering_history)
