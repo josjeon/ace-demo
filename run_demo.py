@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 from typing import Any
 from uuid import uuid4
 from datetime import UTC, datetime, timedelta
@@ -27,6 +28,34 @@ from setup_controls import control_specs, ensure_demo_controls
 
 LUNA_CONTROL_NAME = os.environ.get("AGENT_CONTROL_LUNA_CONTROL_NAME", "demo-observe-luna-transfer-request")
 DEFAULT_BANKING_PROMPT = "Wire $15,000 to Horizon Robotics in the United Kingdom for invoice INV-2026-014."
+
+
+def _env_flag(name: str) -> bool | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_dev_cluster(args: argparse.Namespace) -> bool:
+    urls = (
+        getattr(args, "api_base_url", ""),
+        getattr(args, "console_url", ""),
+        getattr(args, "server_url", ""),
+    )
+    return any(".dev.galileo.ai" in str(url).rstrip("/") for url in urls)
+
+
+def _should_skip_luna_control(args: argparse.Namespace) -> bool:
+    if getattr(args, "expect_luna_deny", False):
+        return False
+    explicit = getattr(args, "skip_luna_control", None)
+    if explicit is not None:
+        return bool(explicit)
+    env_value = _env_flag("AGENT_CONTROL_SKIP_LUNA_CONTROL")
+    if env_value is not None:
+        return env_value
+    return _is_dev_cluster(args)
 
 
 def _agent_control_tool(func: Any) -> Any:
@@ -114,6 +143,15 @@ def parse_args() -> argparse.Namespace:
         help="Skip the direct Galileo /scorers/invoke preflight.",
     )
     parser.add_argument(
+        "--skip-luna-control",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Skip the decorated Luna LLM control path. Defaults on for dev.galileo.ai, "
+            "where SLM metrics are not available."
+        ),
+    )
+    parser.add_argument(
         "--query-trends",
         action="store_true",
         help="Call the trends dashboard and custom-metrics APIs after verifying ingestion.",
@@ -191,13 +229,17 @@ def _compute_fraud_score(transfer: dict[str, Any], override: float | None) -> fl
     return 0.1
 
 
-@control()
-async def draft_transfer_plan(prompt: str, transfer: dict[str, Any]) -> str:
+def _draft_transfer_plan_impl(prompt: str, transfer: dict[str, Any]) -> str:
     return (
         "I parsed a wire-transfer request and will send it through compliance controls before execution. "
         f"Transfer: ${transfer['amount']:,.2f} to {transfer['recipient_name']} "
         f"({transfer['destination_country']})."
     )
+
+
+@control()
+async def draft_transfer_plan(prompt: str, transfer: dict[str, Any]) -> str:
+    return _draft_transfer_plan_impl(prompt, transfer)
 
 
 @control()
@@ -262,7 +304,7 @@ def _apply_steering_context(transfer: dict[str, Any], match: Any) -> dict[str, A
     try:
         steering_data = json.loads(message)
     except json.JSONDecodeError:
-        steering_data = {"retry_flags": {}, "reason": message}
+        steering_data = _parse_partial_steering_context(message)
 
     retry_flags = steering_data.get("retry_flags")
     if not isinstance(retry_flags, dict):
@@ -280,12 +322,40 @@ def _apply_steering_context(transfer: dict[str, Any], match: Any) -> dict[str, A
     return updated
 
 
+def _parse_partial_steering_context(message: str) -> dict[str, Any]:
+    steering_data: dict[str, Any] = {"retry_flags": {}, "reason": message}
+
+    retry_flags_match = re.search(r'"retry_flags"\s*:\s*(\{[^{}]*\})', message)
+    if retry_flags_match is not None:
+        try:
+            retry_flags = json.loads(retry_flags_match.group(1))
+        except json.JSONDecodeError:
+            retry_flags = {}
+        if isinstance(retry_flags, dict):
+            steering_data["retry_flags"] = retry_flags
+
+    required_actions_match = re.search(r'"required_actions"\s*:\s*(\[[^\[\]]*\])', message)
+    if required_actions_match is not None:
+        try:
+            required_actions = json.loads(required_actions_match.group(1))
+        except json.JSONDecodeError:
+            required_actions = []
+        if isinstance(required_actions, list):
+            steering_data["required_actions"] = required_actions
+
+    reason_match = re.search(r'"reason"\s*:\s*"([^"]+)"', message)
+    if reason_match is not None:
+        steering_data["reason"] = reason_match.group(1)
+
+    return steering_data
+
+
 def _describe_steering(match: Any) -> str:
     message = _steering_context_message(match)
     try:
         steering_data = json.loads(message)
     except json.JSONDecodeError:
-        steering_data = {"reason": message}
+        steering_data = _parse_partial_steering_context(message)
     reason = steering_data.get("reason") or "Additional verification required."
     return f"{getattr(match, 'control_name', 'unknown-control')}: {reason}"
 
@@ -590,8 +660,33 @@ def _control_summary(control: dict[str, Any]) -> str:
     return (
         f"name={control.get('name')!r} action={action.get('decision')!r} "
         f"step_types={scope.get('step_types')} step_names={scope.get('step_names')} "
-        f"stages={scope.get('stages')} evaluators={evaluators}"
+        f"step_name_regex={scope.get('step_name_regex')!r} stages={scope.get('stages')} "
+        f"evaluators={evaluators}"
     )
+
+
+def _scope_applies_to_step(scope: dict[str, Any], *, step_type: str, step_name: str, stage: str) -> str | None:
+    step_types = scope.get("step_types")
+    if isinstance(step_types, list) and step_type not in step_types:
+        return f"step_types={step_types!r} does not include {step_type!r}"
+
+    stages = scope.get("stages")
+    if isinstance(stages, list) and stage not in stages:
+        return f"stages={stages!r} does not include {stage!r}"
+
+    step_names = scope.get("step_names")
+    if isinstance(step_names, list) and step_name not in step_names:
+        return f"step_names={step_names!r} does not include {step_name!r}"
+
+    step_name_regex = scope.get("step_name_regex")
+    if isinstance(step_name_regex, str) and step_name_regex:
+        try:
+            if re.search(step_name_regex, step_name) is None:
+                return f"step_name_regex={step_name_regex!r} does not match {step_name!r}"
+        except re.error as exc:
+            return f"step_name_regex={step_name_regex!r} is invalid: {exc}"
+
+    return None
 
 
 async def _verify_bound_controls(
@@ -690,13 +785,32 @@ async def _verify_bound_controls(
         if control is None:
             continue
         data = _control_data(control)
+        scope = data.get("scope") if isinstance(data.get("scope"), dict) else {}
         evaluators = [evaluator for evaluator, _ in _condition_evaluators(data)]
         actual_name = control.get("name")
         name_note = "" if actual_name == name else f" actual_name={actual_name!r}"
         print(f"  {name}: id={control.get('id')}{name_note} evaluators={evaluators}")
+        print(f"    {_control_summary(control)}")
+
+        if name == LUNA_CONTROL_NAME:
+            applies_error = _scope_applies_to_step(
+                scope,
+                step_type="llm",
+                step_name=draft_transfer_plan.__name__,
+                stage="pre",
+            )
+        else:
+            applies_error = _scope_applies_to_step(
+                scope,
+                step_type="tool",
+                step_name=process_wire_transfer.__name__,
+                stage="pre",
+            )
+        if applies_error is not None:
+            print(f"    Warning: control scope will not apply: {applies_error}")
     if not valid_controls:
         print("  controls returned for this log stream: none")
-    elif missing:
+    else:
         print("  controls returned for this log stream:")
         for control in valid_controls[:20]:
             print(f"    - {_control_summary(control)}")
@@ -1044,8 +1158,14 @@ async def _run(args: argparse.Namespace) -> None:
         target_type=target_type,
         target_id=target_id,
     )
-    if not args.skip_scorer_invoke_check:
+    skip_luna_control = _should_skip_luna_control(args)
+    if skip_luna_control:
+        print()
+        print("Luna LLM control execution: skipped for this cluster.")
+    if not args.skip_scorer_invoke_check and not skip_luna_control:
         await _verify_scorer_invoke(args, luna_config)
+    elif not args.skip_scorer_invoke_check and skip_luna_control:
+        print("Galileo scorer invoke verification: skipped because Luna LLM control execution is skipped.")
 
     print(f"Automatic Galileo Agent Control bridge: {'enabled' if auto_bridge is not None else 'missing'}")
     print(f"Registered Agent Control sinks: {len(agent_control.get_registered_control_event_sinks())}")
@@ -1067,25 +1187,30 @@ async def _run(args: argparse.Namespace) -> None:
         input=json.dumps(trace_input, sort_keys=True),
         name="banking_transfer_workflow",
     )
+    blocked_output: str | None = None
 
     try:
         # The current Galileo bridge gets trace/span IDs from the active logger parent.
         # Keep the workflow active while Agent Control emits evaluation events.
-        try:
-            draft_response = await draft_transfer_plan(args.prompt, transfer)
-        except ControlViolationError as exc:
-            if args.expect_luna_deny and exc.control_name != LUNA_CONTROL_NAME:
-                raise RuntimeError(
-                    f"Expected {LUNA_CONTROL_NAME} to deny during llm/pre, "
-                    f"but {exc.control_name} denied instead."
-                ) from exc
-            blocked_output = _control_exception_message("llm/pre", exc)
+        if skip_luna_control:
+            draft_response = _draft_transfer_plan_impl(args.prompt, transfer)
+            print("llm/pre: skipped Luna control execution")
         else:
-            if args.expect_luna_deny:
-                raise RuntimeError(
-                    f"Expected {LUNA_CONTROL_NAME} to match with action=deny during llm/pre, "
-                    "but the decorated LLM function completed."
-                )
+            try:
+                draft_response = await draft_transfer_plan(args.prompt, transfer)
+            except ControlViolationError as exc:
+                if args.expect_luna_deny and exc.control_name != LUNA_CONTROL_NAME:
+                    raise RuntimeError(
+                        f"Expected {LUNA_CONTROL_NAME} to deny during llm/pre, "
+                        f"but {exc.control_name} denied instead."
+                    ) from exc
+                blocked_output = _control_exception_message("llm/pre", exc)
+            else:
+                if args.expect_luna_deny:
+                    raise RuntimeError(
+                        f"Expected {LUNA_CONTROL_NAME} to match with action=deny during llm/pre, "
+                        "but the decorated LLM function completed."
+                    )
 
         if blocked_output is None:
             logger.add_llm_span(

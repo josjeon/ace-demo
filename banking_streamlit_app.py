@@ -27,10 +27,12 @@ from run_demo import (
     _apply_steering_context,
     _compute_fraud_score,
     _describe_steering,
+    _draft_transfer_plan_impl,
     _login_with_api_key,
     _parse_transfer_request,
     _control_exception_message,
     _control_exception_rows,
+    _should_skip_luna_control,
     draft_transfer_plan,
     process_wire_transfer,
     _render_final_answer,
@@ -59,6 +61,7 @@ def _defaults() -> SimpleNamespace:
         target_type=os.environ.get("AGENT_CONTROL_TARGET_TYPE", "log_stream"),
         skip_runtime_token_check=True,
         skip_scorer_invoke_check=True,
+        skip_luna_control=None,
         expect_luna_deny=False,
         max_steer_attempts=3,
     )
@@ -149,14 +152,19 @@ async def _run_banking_agent(
     steering_history: list[str] = []
     final_answer: str
     blocked_output: str | None = None
+    skip_luna_control = _should_skip_luna_control(argparse.Namespace(**vars(args)))
 
     try:
-        try:
-            draft_response = await draft_transfer_plan(prompt, transfer)
-            events.append({"stage": "llm", "rows": []})
-        except ControlViolationError as exc:
-            blocked_output = _control_exception_message("llm", exc)
-            events.append({"stage": "llm", "rows": _control_exception_rows(exc, "deny")})
+        if skip_luna_control:
+            draft_response = _draft_transfer_plan_impl(prompt, transfer)
+            events.append({"stage": "llm", "rows": [{"control": "Luna LLM control skipped on dev cluster"}]})
+        else:
+            try:
+                draft_response = await draft_transfer_plan(prompt, transfer)
+                events.append({"stage": "llm", "rows": []})
+            except ControlViolationError as exc:
+                blocked_output = _control_exception_message("llm", exc)
+                events.append({"stage": "llm", "rows": _control_exception_rows(exc, "deny")})
 
         if blocked_output is None:
             logger.add_llm_span(

@@ -64,7 +64,7 @@ def control_specs() -> list[tuple[str, dict[str, Any]]]:
                         "name": "regex",
                         "config": {
                             "pattern": r"['\"]amount['\"]\s*:\s*[1-9]\d{4,}(?:\.0+)?"
-                            r".*['\"]verified_2fa['\"]\s*:\s*(?:false|False)",
+                            r"[\s\S]*['\"]verified_2fa['\"]\s*:\s*(?:false|False)",
                         },
                     },
                 },

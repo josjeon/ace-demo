@@ -20,9 +20,9 @@ DEFAULT_API_URL = os.environ.get(
 
 
 def resolve_agent_control_api_key() -> str | None:
-    """Use the Galileo API key as the Agent Control credential unless overridden."""
-    api_key = os.environ.get("AGENT_CONTROL_API_KEY") or os.environ.get("GALILEO_API_KEY")
-    if api_key and "AGENT_CONTROL_API_KEY" not in os.environ:
+    """Use the Galileo API key as the Agent Control Enterprise credential."""
+    api_key = os.environ.get("GALILEO_API_KEY") or os.environ.get("AGENT_CONTROL_API_KEY")
+    if api_key:
         os.environ["AGENT_CONTROL_API_KEY"] = api_key
     return api_key
 

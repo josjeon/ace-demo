@@ -1,6 +1,6 @@
 # Agent Control Galileo E2E
 
-Standalone demo app for exercising real Agent Control `ControlExecutionEvent`s through the local `galileo-python` bridge and into Galileo as `ControlSpan`s, while the Agent Control server itself runs remotely in the Galileo `test-evals` devstack.
+Standalone demo app for exercising real Agent Control `ControlExecutionEvent`s through the Galileo Python bridge and into Galileo as `ControlSpan`s, while the Agent Control server itself runs remotely.
 
 For a step-by-step Forward Deploy Engineer runbook, including manual Console setup, devstack routes, commands, and troubleshooting, see [`FDE_RUNBOOK.md`](FDE_RUNBOOK.md).
 
@@ -18,7 +18,7 @@ For a step-by-step Forward Deploy Engineer runbook, including manual Console set
 
 ## Local Python Environment
 
-The demo does not require local `agent-control` or `orbit` checkouts. Agent Control runs as a devstack service, and Orbit is already part of the devstack. Until the Galileo Agent Control bridge is published to PyPI, install this package with the local Galileo Python SDK checkout at `/Users/namrataghadi/code/galileo-python`.
+The demo does not require local `agent-control`, `orbit`, or `galileo-python` checkouts. Agent Control runs as a remote service, Orbit is already part of the stack, and this package installs `galileo[openai]` plus the Agent Control SDK/evaluators from PyPI.
 
 ```bash
 cd ~/code/agent-control-galileo-e2e
@@ -44,7 +44,7 @@ export AGENT_CONTROL_TARGET_TYPE='log_stream'
 export AGENT_CONTROL_RUNTIME_AUTH_MODE='jwt'
 ```
 
-The demo maps `GALILEO_API_KEY` to `AGENT_CONTROL_API_KEY` automatically unless `AGENT_CONTROL_API_KEY` is already set.
+For Agent Control Enterprise, use the Galileo API key with the `Galileo-API-Key` header. If `AGENT_CONTROL_API_KEY` is also set, keep it equal to `GALILEO_API_KEY`; stale OSS keys can cause `401 Unauthorized` during Agent Control init.
 
 ## 1. Banking Transfer Controls
 
