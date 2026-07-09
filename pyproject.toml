@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "Standalone banking demo for Agent Control evaluations emitted as Galileo control spans."
 requires-python = ">=3.12,<3.15"
 dependencies = [
-  "galileo[openai]>=2.3.0",
-  "agent-control-sdk[galileo]>=7.10.0",
+  "galileo[openai,otel]>=2.3.0",
+  "agent-control-sdk[galileo,otel]>=7.10.0",
   "agent-control-evaluators>=7.10.0",
   "agent-control-evaluator-galileo>=7.10.0",
   "httpx>=0.26.0",
@@ -19,7 +19,9 @@ dependencies = [
 [tool.setuptools]
 py-modules = [
   "banking_streamlit_app",
+  "banking_streamlit_app_otel",
   "common",
   "run_demo",
+  "run_demo_otel",
   "setup_controls",
 ]

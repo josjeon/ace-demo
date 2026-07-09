@@ -110,6 +110,80 @@ The runner prints:
   - `GET /projects/{project_id}/log_streams/{log_stream_id}/trends`
   - `POST /projects/{project_id}/metrics/custom_search` for several control-oriented chart slices
 
+### OTLP-only variant
+
+`run_demo_otel.py` leaves the Galileo Logger demo unchanged and sends both sides of
+the trace over OTLP/HTTP:
+
+- application workflow, LLM, and tool spans use the standard OTLP/HTTP exporter
+- Agent Control execution events use the built-in `otel` sink
+- both exporters target the exact `AGENT_CONTROL_OTEL_ENDPOINT` value
+- Agent Control receives the application trace ID and workflow span ID, so
+  control spans are workflow children just like the Galileo Logger bridge
+- the Agent Control exporter supplies the Galileo API key, project, and log-stream
+  routing headers without printing them
+
+Install the OTEL extras, load the local environment, and run the full readback check:
+
+```bash
+cd /Users/namratag/code/ace-demo
+./.venv/bin/python -m pip install -e .
+set -a
+source .env
+set +a
+
+./.venv/bin/python run_demo_otel.py \
+  --verify-api \
+  --query-trends \
+  --verify-delay-seconds 10
+```
+
+The `agents` namespace currently has no public HTTPRoute for its
+`agent-control` service. Until one is added, start a port-forward in a second
+terminal:
+
+```bash
+kubectl port-forward -n agents svc/agent-control 18000:8000
+```
+
+Then set the override before Python starts because the decorators read the URL
+at import time:
+
+```bash
+set -a
+source .env
+set +a
+AGENT_CONTROL_URL=http://127.0.0.1:18000 \
+  ./.venv/bin/python run_demo_otel.py \
+    --verify-api \
+    --query-trends \
+    --verify-delay-seconds 10
+```
+
+The required OTLP settings are:
+
+```bash
+export AGENT_CONTROL_OTEL_ENABLED=true
+export AGENT_CONTROL_OTEL_ENDPOINT="$GALILEO_API_URL/otel/v1/traces"
+```
+
+`AGENT_CONTROL_OTEL_HEADERS` is optional for this runner. If omitted, it is
+constructed in memory from `GALILEO_API_KEY`, `GALILEO_PROJECT`, and
+`GALILEO_LOG_STREAM`. The application exporter and Agent Control exporter are
+both constructed from the same endpoint and headers so a run cannot silently
+split its trace across collectors.
+
+The `agents` stack inspected on June 26, 2026 runs
+`ingest-service:v0.33.0`. That image stores the OTLP spans named
+`agent_control.control_execution`, but classifies them as `workflow`, so they
+do not appear as control spans in the UI. Deploy an ingest-service build that
+contains Orbit commit `9ccc212c` (`feat: add agent control native support in
+otel`) or a later release containing it. That change recognizes the
+`agent_control.*` contract and maps `control_id`, `agent_name`, `check_stage`,
+`applies_to`, evaluator fields, and the control result. The runner's
+`--verify-api` check reports this condition explicitly rather than treating raw
+workflow rows as a successful control-span test.
+
 ## 3. Optional Variants
 
 Batch mode:
@@ -149,6 +223,25 @@ Force a hard deny:
 ```
 
 ## 4. Interactive Streamlit App
+
+### OTLP-only Streamlit variant
+
+The OTEL variant leaves `banking_streamlit_app.py` unchanged and does not
+initialize `GalileoLogger`:
+
+```bash
+cd /Users/namratag/code/ace-demo
+set -a
+source .env
+set +a
+
+./.venv/bin/python -m streamlit run banking_streamlit_app_otel.py
+```
+
+Open `http://localhost:8501`. The result view reports both OTEL control-event
+spans found in trace readback and spans normalized to Galileo's typed `control`
+record. If the first count is non-zero while the second is zero, the configured
+ingest-service does not yet contain Orbit commit `9ccc212c`.
 
 `banking_streamlit_app.py` is an interactive version of the same standalone banking demo. It does not use Strands or hooks. It uses the same `@control()` decorator path as `run_demo.py`, displays each evaluation stage, shows steering retries, and prints the Galileo trace metadata created by the run.
 
