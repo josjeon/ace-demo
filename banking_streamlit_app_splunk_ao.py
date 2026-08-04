@@ -13,39 +13,43 @@ import httpx
 import streamlit as st
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(".env.splunk-ao", override=True)
 
-from common import (
+from common_splunk_ao import (
     DEFAULT_AGENT_CONTROL_URL,
     DEFAULT_AGENT_NAME,
     DEFAULT_API_URL,
     DEFAULT_CONSOLE_URL,
     DEFAULT_LOG_STREAM,
     DEFAULT_PROJECT,
+    configure_galileo_core_compatibility,
     resolve_agent_control_api_key,
     resolve_agent_control_api_key_header,
 )
-from run_demo import (
+
+configure_galileo_core_compatibility()
+
+from run_demo_splunk_ao import (
     DEFAULT_BANKING_PROMPT,
     _apply_steering_context,
     _compute_fraud_score,
+    _control_exception_message,
+    _control_exception_rows,
     _describe_steering,
     _draft_transfer_plan_impl,
     _login_with_api_key,
     _parse_transfer_request,
-    _control_exception_message,
-    _control_exception_rows,
+    _render_final_answer,
     _should_skip_luna_control,
+    _verify_bound_controls,
     draft_transfer_plan,
     process_wire_transfer,
-    _render_final_answer,
-    _verify_bound_controls,
 )
-from setup_controls import control_specs
+from setup_controls_splunk_ao import control_specs
 
 
 def _masked_api_key() -> str:
-    api_key = os.environ.get("GALILEO_API_KEY", "")
+    api_key = os.environ.get("SPLUNK_AO_API_KEY", "")
     if len(api_key) <= 8:
         return "unset" if not api_key else "***"
     return f"{api_key[:4]}...{api_key[-4:]}"
@@ -55,11 +59,11 @@ def _defaults() -> SimpleNamespace:
     return SimpleNamespace(
         agent_name=os.environ.get("AGENT_CONTROL_AGENT_NAME", DEFAULT_AGENT_NAME),
         server_url=os.environ.get("AGENT_CONTROL_URL", DEFAULT_AGENT_CONTROL_URL),
-        project=os.environ.get("GALILEO_PROJECT", DEFAULT_PROJECT),
-        log_stream=os.environ.get("GALILEO_LOG_STREAM", DEFAULT_LOG_STREAM),
-        mode=os.environ.get("GALILEO_LOGGER_MODE", "batch"),
-        console_url=os.environ.get("GALILEO_CONSOLE_URL", DEFAULT_CONSOLE_URL),
-        api_base_url=os.environ.get("GALILEO_API_URL", DEFAULT_API_URL),
+        project=os.environ.get("SPLUNK_AO_PROJECT", DEFAULT_PROJECT),
+        log_stream=os.environ.get("SPLUNK_AO_AGENT_STREAM", DEFAULT_LOG_STREAM),
+        mode=os.environ.get("SPLUNK_AO_MODE", "batch"),
+        console_url=os.environ.get("SPLUNK_AO_CONSOLE_URL", DEFAULT_CONSOLE_URL),
+        api_base_url=os.environ.get("SPLUNK_AO_API_URL", DEFAULT_API_URL),
         runtime_auth_mode=os.environ.get("AGENT_CONTROL_RUNTIME_AUTH_MODE", "jwt"),
         target_type=os.environ.get("AGENT_CONTROL_TARGET_TYPE", "log_stream"),
         skip_runtime_token_check=True,
@@ -72,21 +76,23 @@ def _defaults() -> SimpleNamespace:
 
 def _configure_environment(args: SimpleNamespace) -> None:
     if args.console_url:
-        os.environ["GALILEO_CONSOLE_URL"] = args.console_url
+        os.environ["SPLUNK_AO_CONSOLE_URL"] = args.console_url
     if args.api_base_url:
-        os.environ["GALILEO_API_URL"] = args.api_base_url
-    os.environ["GALILEO_PROJECT"] = args.project
-    os.environ["GALILEO_LOG_STREAM"] = args.log_stream
+        os.environ["SPLUNK_AO_API_URL"] = args.api_base_url
+    os.environ["SPLUNK_AO_PROJECT"] = args.project
+    os.environ["SPLUNK_AO_AGENT_STREAM"] = args.log_stream
     os.environ["AGENT_CONTROL_URL"] = args.server_url
     os.environ["AGENT_CONTROL_RUNTIME_AUTH_MODE"] = args.runtime_auth_mode
     resolve_agent_control_api_key()
     resolve_agent_control_api_key_header()
 
 
-async def _validate_galileo_credentials(args: SimpleNamespace) -> None:
-    api_key = os.environ.get("GALILEO_API_KEY")
+async def _validate_splunk_ao_credentials(args: SimpleNamespace) -> None:
+    api_key = os.environ.get("SPLUNK_AO_API_KEY")
     if not api_key:
-        raise RuntimeError("Missing GALILEO_API_KEY in the Streamlit process environment.")
+        raise RuntimeError(
+            "Missing SPLUNK_AO_API_KEY in the Streamlit process environment."
+        )
 
     async with httpx.AsyncClient(timeout=20.0) as client:
         await _login_with_api_key(client, args.api_base_url.rstrip("/"), api_key)
@@ -102,28 +108,29 @@ async def _run_banking_agent(
     fraud_score: float | None,
 ) -> dict[str, Any]:
     _configure_environment(args)
-    await _validate_galileo_credentials(args)
+    await _validate_splunk_ao_credentials(args)
 
     import agent_control
     from agent_control import ControlSteerError, ControlViolationError
-    from galileo.logger.logger import GalileoLogger
+    from splunk_ao.logger import SplunkAOLogger
 
-    logger = GalileoLogger(project=args.project, log_stream=args.log_stream, mode=args.mode)
+    logger = SplunkAOLogger(
+        project=args.project, agent_stream=args.log_stream, mode=args.mode
+    )
     session_id = logger.start_session(
         name="agent-control-banking-streamlit",
         external_id=f"agent-control-banking-streamlit-{uuid4()}",
         metadata={"demo": "agent-control-banking-streamlit"},
     )
-    if logger.project_id is None or logger.log_stream_id is None:
-        raise RuntimeError("Galileo logger did not resolve project/log stream IDs.")
+    if logger.project_id is None or logger.agent_stream_id is None:
+        raise RuntimeError("Splunk AO logger did not resolve project/log stream IDs.")
 
-    os.environ["GALILEO_PROJECT_ID"] = logger.project_id
-    target_id = logger.log_stream_id
+    target_id = logger.agent_stream_id
     target_type = args.target_type
 
     agent_control.init(
         agent_name=args.agent_name,
-        agent_description="Interactive banking transfer demo for Agent Control + Galileo",
+        agent_description="Interactive banking transfer demo for Agent Control + Splunk AO",
         server_url=args.server_url,
         api_key=resolve_agent_control_api_key(),
         api_key_header=resolve_agent_control_api_key_header(),
@@ -135,7 +142,9 @@ async def _run_banking_agent(
 
     control_config_args = argparse.Namespace(**vars(args))
     control_config_args.target_type = target_type
-    await _verify_bound_controls(control_config_args, target_type=target_type, target_id=target_id)
+    await _verify_bound_controls(
+        control_config_args, target_type=target_type, target_id=target_id
+    )
 
     parse_args = SimpleNamespace(
         prompt=prompt,
@@ -148,8 +157,12 @@ async def _run_banking_agent(
     transfer["fraud_score"] = _compute_fraud_score(transfer, fraud_score)
 
     trace_input = {"prompt": prompt, "transfer": transfer}
-    trace = logger.start_trace(input=trace_input, name="agent-control-banking-streamlit")
-    workflow = logger.add_workflow_span(input=json.dumps(trace_input, sort_keys=True), name="banking_transfer_workflow")
+    trace = logger.start_trace(
+        input=trace_input, name="agent-control-banking-streamlit"
+    )
+    workflow = logger.add_workflow_span(
+        input=json.dumps(trace_input, sort_keys=True), name="banking_transfer_workflow"
+    )
 
     events: list[dict[str, Any]] = []
     steering_history: list[str] = []
@@ -160,14 +173,21 @@ async def _run_banking_agent(
     try:
         if skip_luna_control:
             draft_response = _draft_transfer_plan_impl(prompt, transfer)
-            events.append({"stage": "llm", "rows": [{"control": "Luna LLM control skipped on dev cluster"}]})
+            events.append(
+                {
+                    "stage": "llm",
+                    "rows": [{"control": "Luna LLM control skipped on dev cluster"}],
+                }
+            )
         else:
             try:
                 draft_response = await draft_transfer_plan(prompt, transfer)
                 events.append({"stage": "llm", "rows": []})
             except ControlViolationError as exc:
                 blocked_output = _control_exception_message("llm", exc)
-                events.append({"stage": "llm", "rows": _control_exception_rows(exc, "deny")})
+                events.append(
+                    {"stage": "llm", "rows": _control_exception_rows(exc, "deny")}
+                )
 
         if blocked_output is None:
             logger.add_llm_span(
@@ -186,7 +206,13 @@ async def _run_banking_agent(
             for attempt in range(1, args.max_steer_attempts + 1):
                 try:
                     tool_output = await process_wire_transfer(**tool_input)
-                    events.append({"stage": f"tool attempt {attempt}", "input": tool_input, "rows": []})
+                    events.append(
+                        {
+                            "stage": f"tool attempt {attempt}",
+                            "input": tool_input,
+                            "rows": [],
+                        }
+                    )
                 except ControlSteerError as exc:
                     events.append(
                         {
@@ -199,7 +225,9 @@ async def _run_banking_agent(
                     tool_input = _apply_steering_context(tool_input, exc)
                     continue
                 except ControlViolationError as exc:
-                    blocked_output = _control_exception_message(f"tool attempt {attempt}", exc)
+                    blocked_output = _control_exception_message(
+                        f"tool attempt {attempt}", exc
+                    )
                     events.append(
                         {
                             "stage": f"tool attempt {attempt}",
@@ -219,7 +247,9 @@ async def _run_banking_agent(
                 blocked_output = f"Execution blocked: steering did not converge within {args.max_steer_attempts} attempts."
 
         if blocked_output is None:
-            final_answer = _render_final_answer(draft_response, tool_output, steering_history)
+            final_answer = _render_final_answer(
+                draft_response, tool_output, steering_history
+            )
             status = "completed"
         else:
             final_answer = blocked_output
@@ -228,7 +258,11 @@ async def _run_banking_agent(
         logger.conclude(output=final_answer)
         logger.flush()
 
-        control_spans = [span for span in getattr(workflow, "spans", []) if getattr(span, "type", None) == "control"]
+        control_spans = [
+            span
+            for span in getattr(workflow, "spans", [])
+            if getattr(span, "type", None) == "control"
+        ]
         return {
             "status": status,
             "answer": final_answer,
@@ -237,7 +271,7 @@ async def _run_banking_agent(
             "final_transfer": locals().get("tool_input", transfer),
             "steering_history": steering_history,
             "project_id": logger.project_id,
-            "log_stream_id": logger.log_stream_id,
+            "agent_stream_id": logger.agent_stream_id,
             "session_id": session_id,
             "trace_id": str(trace.id),
             "control_span_count": len(control_spans),
@@ -261,11 +295,11 @@ def main() -> None:
         st.header("Configuration")
         args.server_url = st.text_input("Agent Control URL", args.server_url)
         args.agent_name = st.text_input("Agent name", args.agent_name)
-        st.caption(f"GALILEO_PROJECT: {args.project}")
-        st.caption(f"GALILEO_LOG_STREAM: {args.log_stream}")
-        st.caption(f"GALILEO_API_URL: {args.api_base_url}")
-        st.caption(f"GALILEO_CONSOLE_URL: {args.console_url}")
-        st.caption(f"GALILEO_API_KEY: {_masked_api_key()}")
+        st.caption(f"SPLUNK_AO_PROJECT: {args.project}")
+        st.caption(f"SPLUNK_AO_AGENT_STREAM: {args.log_stream}")
+        st.caption(f"SPLUNK_AO_API_URL: {args.api_base_url}")
+        st.caption(f"SPLUNK_AO_CONSOLE_URL: {args.console_url}")
+        st.caption(f"SPLUNK_AO_API_KEY: {_masked_api_key()}")
         st.caption(f"AGENT_CONTROL_TARGET_TYPE: {args.target_type}")
         st.caption("Controls are loaded from the controls already attached in Console.")
         st.divider()
@@ -284,7 +318,9 @@ def main() -> None:
         selected = st.selectbox("Scenario", list(examples))
         prompt = st.text_area("Transfer request", value=examples[selected], height=120)
     with col_b:
-        amount = st.number_input("Amount override", min_value=0.0, value=0.0, step=1000.0)
+        amount = st.number_input(
+            "Amount override", min_value=0.0, value=0.0, step=1000.0
+        )
         destination = st.text_input("Destination override", value="")
         recipient = st.text_input("Recipient override", value="")
         fraud = st.slider(
@@ -299,11 +335,13 @@ def main() -> None:
     if not run_clicked:
         return
 
-    if not os.environ.get("GALILEO_API_KEY"):
-        st.error("Set GALILEO_API_KEY in the environment before running the interactive app.")
+    if not os.environ.get("SPLUNK_AO_API_KEY"):
+        st.error(
+            "Set SPLUNK_AO_API_KEY in the environment before running the interactive app."
+        )
         return
 
-    with st.spinner("Running Agent Control checks and emitting Galileo spans..."):
+    with st.spinner("Running Agent Control checks and emitting Splunk AO spans..."):
         try:
             result = _run_async(
                 _run_banking_agent(
@@ -315,7 +353,7 @@ def main() -> None:
                     fraud_score=fraud if fraud > 0 else None,
                 )
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surface demo failures in the UI
             st.error(f"{type(exc).__name__}: {exc}")
             return
 
