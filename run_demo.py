@@ -609,6 +609,12 @@ def _control_matches_spec(control: dict[str, Any], expected_spec: dict[str, Any]
 
     expected_condition = expected_spec.get("condition", {})
     actual_condition = data.get("condition", {})
+    if any(key in expected_condition for key in ("and", "or", "not")):
+        return (
+            expected_action.get("decision") == actual_action.get("decision")
+            and _values_match(expected_condition, actual_condition)
+        )
+
     expected_selector = expected_condition.get("selector", {})
     actual_selector = actual_condition.get("selector", {})
     if expected_selector.get("path") != actual_selector.get("path"):

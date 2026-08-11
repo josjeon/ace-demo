@@ -24,6 +24,9 @@ LUNA_TIMEOUT_MS = 30000
 
 def luna_config() -> dict[str, Any]:
     return {
+        # Agent Control 8.x requires scorer_id. Override this with the concrete
+        # Galileo scorer UUID when Luna execution is enabled for a stack.
+        "scorer_id": os.environ.get("GALILEO_LUNA_SCORER_ID", LUNA_SCORER_LABEL),
         "scorer_label": LUNA_SCORER_LABEL,
         "operator": LUNA_OPERATOR,
         "timeout_ms": LUNA_TIMEOUT_MS,
@@ -54,19 +57,31 @@ def control_specs() -> list[tuple[str, dict[str, Any]]]:
         (
             "demo-steer-large-transfer-2fa",
             {
-                "description": "Require 2FA verification for wire transfers of $10,000 or more.",
+                "description": (
+                    "Require 2FA when the transfer is at least $10,000 AND is NOT already verified."
+                ),
                 "enabled": True,
                 "execution": "server",
                 "scope": {"step_types": ["tool"], "stages": ["pre"]},
                 "condition": {
-                    "selector": {"path": "input"},
-                    "evaluator": {
-                        "name": "regex",
-                        "config": {
-                            "pattern": r"['\"]amount['\"]\s*:\s*[1-9]\d{4,}(?:\.0+)?"
-                            r"[\s\S]*['\"]verified_2fa['\"]\s*:\s*(?:false|False)",
+                    "and": [
+                        {
+                            "selector": {"path": "input.amount"},
+                            "evaluator": {
+                                "name": "regex",
+                                "config": {"pattern": r"^[1-9][0-9]{4,}([.]0+)?$"},
+                            },
                         },
-                    },
+                        {
+                            "not": {
+                                "selector": {"path": "input.verified_2fa"},
+                                "evaluator": {
+                                    "name": "regex",
+                                    "config": {"pattern": r"^(true|True)$"},
+                                },
+                            }
+                        },
+                    ]
                 },
                 "action": {
                     "decision": "steer",
@@ -78,7 +93,41 @@ def control_specs() -> list[tuple[str, dict[str, Any]]]:
                         )
                     },
                 },
-                "tags": ["demo", "galileo", "banking", "steer", "2fa", "pre-tool"],
+                "tags": ["demo", "galileo", "banking", "steer", "2fa", "and", "not", "pre-tool"],
+            },
+        ),
+        (
+            "demo-deny-risky-transfer-composite",
+            {
+                "description": (
+                    "Deny when the destination is sanctioned OR the fraud score is 0.8 or higher."
+                ),
+                "enabled": True,
+                "execution": "server",
+                "scope": {"step_types": ["tool"], "stages": ["pre"]},
+                "condition": {
+                    "or": [
+                        {
+                            "selector": {"path": "input.destination_country"},
+                            "evaluator": {
+                                "name": "regex",
+                                "config": {
+                                    "pattern": r"^(iran|north korea|syria|cuba|crimea)$",
+                                    "flags": ["IGNORECASE"],
+                                },
+                            },
+                        },
+                        {
+                            "selector": {"path": "input.fraud_score"},
+                            "evaluator": {
+                                "name": "regex",
+                                "config": {"pattern": r"^(0[.][89][0-9]*|1([.]0+)?)$"},
+                            },
+                        },
+                    ]
+                },
+                "action": {"decision": "deny"},
+                "tags": ["demo", "galileo", "banking", "deny", "risk", "or", "pre-tool"],
             },
         ),
     ]

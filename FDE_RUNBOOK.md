@@ -219,7 +219,7 @@ https://agent-control-server.test-evals.svc.cluster.local:8443
 
 ## Banking Transfer Controls
 
-The demo needs two Agent Control controls. The typical user behavior is to create those controls in Console, then attach or bind them to the target project/log stream. Use [controls_for_ui.json](~/code/agent-control-galileo-e2e/controls_for_ui.json:1) as the raw field reference while filling out the controls store in the UI.
+The demo needs three Agent Control controls. The typical user behavior is to create those controls in Console, then attach or bind them to the target project/log stream. Use [controls_for_ui.json](~/code/agent-control-galileo-e2e/controls_for_ui.json:1) as the raw field reference while filling out the controls store in the UI. The 2FA control exercises `AND` with nested `NOT`; the risky-transfer control exercises `OR`.
 
 ### Manual Controls Creation In Console
 
@@ -249,6 +249,12 @@ If the UI does not expose step names or step-name regex, leave step names unset.
 
 The steering control uses a regex evaluator instead of JSON field constraints or JSON Schema so it can be created through the current Console form without nested object parsing issues.
 
+Each composite entry in `controls_for_ui.json` includes `ui_form_values`. Copy
+values from that object into individual Console fields. The regexes deliberately
+avoid JSON escape sequences, and the steering message is represented there as a
+JSON object so it can be copied without the escaped quotes required by the API
+definition string.
+
 For the steering context textbox, paste the message JSON without escaping it:
 
 ```json
@@ -266,10 +272,11 @@ Once you have created controls in the Controls tab, bind them to your log stream
 NOTE: This step create a clone of the control and attaches to the logstream.
 5. Ensure every control is enabled.
 
-The two controls are:
+The three controls are:
 
 - `demo-observe-luna-transfer-request-clone-xxx`
 - `demo-steer-large-transfer-2fa-clone-xxx`
+- `demo-deny-risky-transfer-composite-clone-xxx`
 
 
 ### Alternative: Create Controls With Script
@@ -303,6 +310,7 @@ In the app:
 3. Choose a scenario.
 4. Click `Run transfer`.
 5. Review:
+   - the automatic scenario pass/fail result
    - final transfer status
    - control span count
    - steering history
@@ -666,4 +674,4 @@ If trace/span readback has control spans but Trends is empty, inspect data-servi
 
 The demo is safe to rerun. Trends counts are cumulative for the log stream, so reruns increase chart counts.
 
-For a clean validation, create a new Console project and log stream, manually create and bind the two controls, update `GALILEO_PROJECT` and `GALILEO_LOG_STREAM`, then rerun the CLI or Streamlit demo.
+For a clean validation, create a new Console project and log stream, manually create and bind the three controls, update `GALILEO_PROJECT` and `GALILEO_LOG_STREAM`, then rerun the CLI or Streamlit demo.

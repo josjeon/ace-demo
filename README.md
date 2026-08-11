@@ -48,10 +48,11 @@ For Agent Control Enterprise, use the Galileo API key with the `Galileo-API-Key`
 
 ## 1. Banking Transfer Controls
 
-The demo expects these controls to be created in Console and bound to the Galileo log stream. Use [controls_for_ui.json](/Users/namrataghadi/code/agent-control-galileo-e2e/controls_for_ui.json:1) as the raw field reference when creating the controls manually in the UI. Pass `--setup-controls` only as a less-preferred fallback when UI setup is blocked.
+The demo expects these controls to be created in Console and bound to the Galileo log stream. Use [`controls_for_ui.json`](controls_for_ui.json) as the raw field reference when creating the controls manually in the UI. Pass `--setup-controls` only as a less-preferred fallback when UI setup is blocked.
 
 - `demo-observe-luna-transfer-request`: denies prompt-injection attempts in the pre-LLM banking request with the Galileo Luna `prompt_injection_luna` scorer.
-- `demo-steer-large-transfer-2fa`: steers transfers of `$10,000` or more by returning retry flags that set `verified_2fa=true`.
+- `demo-steer-large-transfer-2fa`: uses `AND` plus nested `NOT` to steer transfers of `$10,000` or more that have not completed 2FA, returning retry flags that set `verified_2fa=true`.
+- `demo-deny-risky-transfer-composite`: uses `OR` to deny transfers when either the destination is sanctioned or the fraud score is at least `0.8`.
 
 Create the controls at the log stream level in Console. The app uses Agent Control's `@control()` decorator, so control matching sees the decorated function names as step names:
 
@@ -88,6 +89,21 @@ Default demo inputs are chosen to trigger 2FA steering and then complete the tra
 - parsed transfer: amount `$15,000`, recipient `Horizon Robotics`, destination `United Kingdom`
 - first tool pre-check steers because 2FA is missing
 - the demo applies the steering context, retries with `verified_2fa=true`, and then executes the transfer
+
+This default path evaluates the `AND` and nested `NOT` nodes. To exercise the
+`OR` control, run with a sanctioned destination or high fraud score:
+
+```bash
+"$DEMO_PYTHON" run_demo.py \
+  --skip-luna-control \
+  --destination-country Iran \
+  --verify-api
+
+"$DEMO_PYTHON" run_demo.py \
+  --skip-luna-control \
+  --fraud-score 0.95 \
+  --verify-api
+```
 
 The runner prints:
 
@@ -256,10 +272,12 @@ cd /Users/namrataghadi/code/agent-control-galileo-e2e
 "$DEMO_PYTHON" -m streamlit run banking_streamlit_app.py
 ```
 
-The app includes scenarios for:
+The app includes repeatable scenarios with automatic expected-result checks for:
 
-- 2FA steering
-- Luna prompt-injection deny
+- `AND + NOT` 2FA steering
+- `OR` sanctioned-country denial
+- `OR` high-fraud-score denial
+- no composite match
 
 ## Notes
 
