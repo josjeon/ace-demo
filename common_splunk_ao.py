@@ -2,30 +2,6 @@ from __future__ import annotations
 
 import os
 
-
-def configure_galileo_core_compatibility() -> None:
-    """Mirror Splunk AO settings for SDK paths still backed by galileo-core.
-
-    splunk-ao 0.1.x uses galileo-core for legacy session CRUD. Keep the public
-    demo configuration on SPLUNK_AO_* while supplying the transitive client
-    with the equivalent values it currently expects.
-    """
-    aliases = {
-        "SPLUNK_AO_API_KEY": "GALILEO_API_KEY",
-        "SPLUNK_AO_CONSOLE_URL": "GALILEO_CONSOLE_URL",
-        "SPLUNK_AO_API_URL": "GALILEO_API_URL",
-        "SPLUNK_AO_PROJECT": "GALILEO_PROJECT",
-        "SPLUNK_AO_AGENT_STREAM": "GALILEO_LOG_STREAM",
-        "SPLUNK_AO_MODE": "GALILEO_MODE",
-    }
-    for source, destination in aliases.items():
-        value = os.environ.get(source)
-        if value:
-            # SPLUNK_AO_* is authoritative for these copied demos. Overwriting
-            # avoids accidentally using stale GALILEO_* exports from a shell.
-            os.environ[destination] = value
-
-
 DEFAULT_AGENT_CONTROL_URL = os.environ.get(
     "AGENT_CONTROL_URL",
     "https://agent-control-test-evals.gcp-dev.galileo.ai",

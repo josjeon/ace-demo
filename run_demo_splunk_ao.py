@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# ruff: noqa: I001 -- load the selected dotenv file before app imports
+
 import argparse
 import asyncio
 import json
@@ -22,12 +24,9 @@ from common_splunk_ao import (
     DEFAULT_CONSOLE_URL,
     DEFAULT_LOG_STREAM,
     DEFAULT_PROJECT,
-    configure_galileo_core_compatibility,
     resolve_agent_control_api_key,
     resolve_agent_control_api_key_header,
 )
-
-configure_galileo_core_compatibility()
 
 from agent_control import ControlSteerError, ControlViolationError, control
 
