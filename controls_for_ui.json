@@ -1,32 +1,5 @@
 [
   {
-    "name": "demo-observe-luna-transfer-request",
-    "definition": {
-      "description": "Block prompt-injection attempts in the banking transfer request with Galileo Luna.",
-      "enabled": true,
-      "execution": "server",
-      "scope": {
-        "step_types": ["llm"],
-        "stages": ["pre"]
-      },
-      "condition": {
-        "selector": {"path": "input"},
-        "evaluator": {
-          "name": "galileo.luna",
-          "config": {
-            "scorer_id": "prompt_injection_luna",
-            "scorer_label": "prompt_injection_luna",
-            "operator": "gte",
-            "timeout_ms": 30000,
-            "threshold": 0.8
-          }
-        }
-      },
-      "action": {"decision": "deny"},
-      "tags": ["demo", "galileo", "luna", "banking", "deny", "pre-llm"]
-    }
-  },
-  {
     "name": "demo-steer-large-transfer-2fa",
     "ui_form_values": {
       "amount_pattern": "^[1-9][0-9]{4,}([.]0+)?$",

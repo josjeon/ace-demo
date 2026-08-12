@@ -10,11 +10,15 @@ import os
 from types import SimpleNamespace
 from typing import Any
 
-import httpx
 import streamlit as st
 from agent_control import ControlSteerError, ControlViolationError
 
-from banking_streamlit_app import STREAMLIT_SCENARIOS, _masked_api_key, _scenario_failures
+from banking_streamlit_app import (
+    STREAMLIT_SCENARIOS,
+    _masked_api_key,
+    _readback_trace_records,
+    _scenario_failures,
+)
 from common import (
     DEFAULT_AGENT_CONTROL_URL,
     DEFAULT_AGENT_NAME,
@@ -33,7 +37,6 @@ from run_demo import (
     _control_exception_rows,
     _describe_steering,
     _draft_transfer_plan_impl,
-    _login_with_api_key,
     _parse_transfer_request,
     _render_final_answer,
     _should_skip_luna_control,
@@ -84,53 +87,30 @@ def _configure_environment(args: SimpleNamespace) -> None:
     resolve_agent_control_api_key_header()
 
 
-async def _readback_counts(args: SimpleNamespace, project_id: str, trace_id: str) -> tuple[int, int]:
-    api_key = os.environ.get("GALILEO_API_KEY")
-    if not api_key:
-        return 0, 0
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        bearer_headers = await _login_with_api_key(client, args.api_base_url.rstrip("/"), api_key)
-        for attempt in range(10):
-            try:
-                response = await client.post(
-                    f"{args.api_base_url.rstrip('/')}/projects/{project_id}/spans/partial_search",
-                    headers=bearer_headers,
-                    json={
-                        "log_stream_id": os.environ["GALILEO_LOG_STREAM_ID"],
-                        "filter_tree": {
-                            "filter": {
-                                "name": "trace_id",
-                                "operator": "eq",
-                                "value": trace_id,
-                                "type": "text",
-                            }
-                        },
-                        "pagination": {"limit": 100},
-                        "select_columns": {
-                            "column_ids": ["id", "trace_id", "type", "name"],
-                            "include_all_metrics": False,
-                            "include_all_feedback": False,
-                        },
-                    },
-                )
-                if response.status_code == 200:
-                    records = response.json().get("records", [])
-                    unique_records = {str(record.get("id")): record for record in records}
-                    typed_count = sum(record.get("type") == "control" for record in unique_records.values())
-                    raw_count = sum(
-                        record.get("name") == "agent_control.control_execution" or record.get("type") == "control"
-                        for record in unique_records.values()
-                    )
-                    if raw_count or typed_count or attempt == 9:
-                        return raw_count, typed_count
-                else:
-                    response.raise_for_status()
-            except httpx.HTTPError:
-                if attempt == 9:
-                    return 0, 0
-            await asyncio.sleep(1.0)
-    return 0, 0
+async def _readback_counts(
+    args: SimpleNamespace,
+    project_id: str,
+    trace_id: str,
+) -> tuple[int, int, list[str]]:
+    records = await _readback_trace_records(
+        args,
+        project_id=project_id,
+        log_stream_id=os.environ["GALILEO_LOG_STREAM_ID"],
+        trace_id=trace_id,
+    )
+    typed_count = sum(record.get("type") == "control" for record in records)
+    raw_count = sum(
+        record.get("name") == "agent_control.control_execution" or record.get("type") == "control"
+        for record in records
+    )
+    control_names = sorted(
+        {
+            str(record["name"])
+            for record in records
+            if record.get("type") == "control" and record.get("name")
+        }
+    )
+    return raw_count, typed_count, control_names
 
 
 async def _run_banking_agent(
@@ -297,7 +277,9 @@ async def _run_banking_agent(
         provider.force_flush()
         provider.shutdown()
 
-    raw_control_events, typed_control_spans = await _readback_counts(args, project_id, trace_id)
+    raw_control_events, typed_control_spans, persisted_control_names = await _readback_counts(
+        args, project_id, trace_id
+    )
     return {
         "status": status,
         "answer": final_answer,
@@ -310,6 +292,7 @@ async def _run_banking_agent(
         "trace_id": trace_id,
         "raw_control_events": raw_control_events,
         "typed_control_spans": typed_control_spans,
+        "persisted_control_names": persisted_control_names,
         "target_type": args.target_type,
         "target_id": log_stream_id,
         "otel_endpoint": endpoint,

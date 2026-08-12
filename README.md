@@ -48,11 +48,16 @@ For Agent Control Enterprise, use the Galileo API key with the `Galileo-API-Key`
 
 ## 1. Banking Transfer Controls
 
-The demo expects these controls to be created in Console and bound to the Galileo log stream. Use [`controls_for_ui.json`](controls_for_ui.json) as the raw field reference when creating the controls manually in the UI. Pass `--setup-controls` only as a less-preferred fallback when UI setup is blocked.
+The demo expects the composite controls to be created in Console and bound to the Galileo log stream. Use [`controls_for_ui.json`](controls_for_ui.json) as the raw field reference when creating them manually in the UI. Pass `--setup-controls` only as a less-preferred fallback when UI setup is blocked.
 
-- `demo-observe-luna-transfer-request`: denies prompt-injection attempts in the pre-LLM banking request with the Galileo Luna `prompt_injection_luna` scorer.
 - `demo-steer-large-transfer-2fa`: uses `AND` plus nested `NOT` to steer transfers of `$10,000` or more that have not completed 2FA, returning retry flags that set `verified_2fa=true`.
 - `demo-deny-risky-transfer-composite`: uses `OR` to deny transfers when either the destination is sanctioned or the fraud score is at least `0.8`.
+
+The optional `demo-observe-luna-transfer-request` control denies prompt injection
+with Galileo Luna. Create it through Console so the scorer selector stores the
+actual scorer ID. Scripted setup includes it only when
+`GALILEO_LUNA_SCORER_ID` is set to that ID; a scorer label is not a valid
+substitute in Agent Control 8.x.
 
 Create the controls at the log stream level in Console. The app uses Agent Control's `@control()` decorator, so control matching sees the decorated function names as step names:
 
@@ -272,7 +277,8 @@ cd /Users/namrataghadi/code/agent-control-galileo-e2e
 "$DEMO_PYTHON" -m streamlit run banking_streamlit_app.py
 ```
 
-The app includes repeatable scenarios with automatic expected-result checks for:
+The app includes repeatable scenarios with automatic expected-result and
+control-telemetry checks for:
 
 - `AND + NOT` 2FA steering
 - `OR` sanctioned-country denial

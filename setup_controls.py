@@ -22,11 +22,12 @@ LUNA_THRESHOLD = 0.8
 LUNA_TIMEOUT_MS = 30000
 
 
-def luna_config() -> dict[str, Any]:
+def luna_config() -> dict[str, Any] | None:
+    scorer_id = os.environ.get("GALILEO_LUNA_SCORER_ID", "").strip()
+    if not scorer_id:
+        return None
     return {
-        # Agent Control 8.x requires scorer_id. Override this with the concrete
-        # Galileo scorer UUID when Luna execution is enabled for a stack.
-        "scorer_id": os.environ.get("GALILEO_LUNA_SCORER_ID", LUNA_SCORER_LABEL),
+        "scorer_id": scorer_id,
         "scorer_label": LUNA_SCORER_LABEL,
         "operator": LUNA_OPERATOR,
         "timeout_ms": LUNA_TIMEOUT_MS,
@@ -35,102 +36,122 @@ def luna_config() -> dict[str, Any]:
 
 
 def control_specs() -> list[tuple[str, dict[str, Any]]]:
-    return [
-        (
-            "demo-observe-luna-transfer-request",
-            {
-                "description": "Block prompt-injection attempts in the banking transfer request with Galileo Luna.",
-                "enabled": True,
-                "execution": "server",
-                "scope": {"step_types": ["llm"], "stages": ["pre"]},
-                "condition": {
-                    "selector": {"path": "input"},
-                    "evaluator": {
-                        "name": "galileo.luna",
-                        "config": luna_config(),
-                    },
-                },
-                "action": {"decision": "deny"},
-                "tags": ["demo", "galileo", "luna", "banking", "deny", "pre-llm"],
-            },
-        ),
-        (
-            "demo-steer-large-transfer-2fa",
-            {
-                "description": (
-                    "Require 2FA when the transfer is at least $10,000 AND is NOT already verified."
-                ),
-                "enabled": True,
-                "execution": "server",
-                "scope": {"step_types": ["tool"], "stages": ["pre"]},
-                "condition": {
-                    "and": [
-                        {
-                            "selector": {"path": "input.amount"},
-                            "evaluator": {
-                                "name": "regex",
-                                "config": {"pattern": r"^[1-9][0-9]{4,}([.]0+)?$"},
-                            },
+    specs: list[tuple[str, dict[str, Any]]] = []
+    luna_evaluator_config = luna_config()
+    if luna_evaluator_config is not None:
+        specs.append(
+            (
+                "demo-observe-luna-transfer-request",
+                {
+                    "description": "Block prompt-injection attempts in the banking transfer request with Galileo Luna.",
+                    "enabled": True,
+                    "execution": "server",
+                    "scope": {"step_types": ["llm"], "stages": ["pre"]},
+                    "condition": {
+                        "selector": {"path": "input"},
+                        "evaluator": {
+                            "name": "galileo.luna",
+                            "config": luna_evaluator_config,
                         },
-                        {
-                            "not": {
-                                "selector": {"path": "input.verified_2fa"},
+                    },
+                    "action": {"decision": "deny"},
+                    "tags": ["demo", "galileo", "luna", "banking", "deny", "pre-llm"],
+                },
+            )
+        )
+
+    specs.extend(
+        [
+            (
+                "demo-steer-large-transfer-2fa",
+                {
+                    "description": (
+                        "Require 2FA when the transfer is at least $10,000 AND is NOT already verified."
+                    ),
+                    "enabled": True,
+                    "execution": "server",
+                    "scope": {"step_types": ["tool"], "stages": ["pre"]},
+                    "condition": {
+                        "and": [
+                            {
+                                "selector": {"path": "input.amount"},
                                 "evaluator": {
                                     "name": "regex",
-                                    "config": {"pattern": r"^(true|True)$"},
+                                    "config": {"pattern": r"^[1-9][0-9]{4,}([.]0+)?$"},
                                 },
-                            }
-                        },
-                    ]
-                },
-                "action": {
-                    "decision": "steer",
-                    "steering_context": {
-                        "message": (
-                            '{"required_actions":["request_2fa","verify_2fa"],'
-                            '"retry_flags":{"verified_2fa":true},'
-                            '"reason":"Transfers >= $10,000 require identity verification via 2FA."}'
-                        )
+                            },
+                            {
+                                "not": {
+                                    "selector": {"path": "input.verified_2fa"},
+                                    "evaluator": {
+                                        "name": "regex",
+                                        "config": {"pattern": r"^(true|True)$"},
+                                    },
+                                }
+                            },
+                        ]
                     },
+                    "action": {
+                        "decision": "steer",
+                        "steering_context": {
+                            "message": (
+                                '{"required_actions":["request_2fa","verify_2fa"],'
+                                '"retry_flags":{"verified_2fa":true},'
+                                '"reason":"Transfers >= $10,000 require identity verification via 2FA."}'
+                            )
+                        },
+                    },
+                    "tags": [
+                        "demo",
+                        "galileo",
+                        "banking",
+                        "steer",
+                        "2fa",
+                        "and",
+                        "not",
+                        "pre-tool",
+                    ],
                 },
-                "tags": ["demo", "galileo", "banking", "steer", "2fa", "and", "not", "pre-tool"],
-            },
-        ),
-        (
-            "demo-deny-risky-transfer-composite",
-            {
-                "description": (
-                    "Deny when the destination is sanctioned OR the fraud score is 0.8 or higher."
-                ),
-                "enabled": True,
-                "execution": "server",
-                "scope": {"step_types": ["tool"], "stages": ["pre"]},
-                "condition": {
-                    "or": [
-                        {
-                            "selector": {"path": "input.destination_country"},
-                            "evaluator": {
-                                "name": "regex",
-                                "config": {
-                                    "pattern": r"^(iran|north korea|syria|cuba|crimea)$",
-                                    "flags": ["IGNORECASE"],
+            ),
+            (
+                "demo-deny-risky-transfer-composite",
+                {
+                    "description": (
+                        "Deny when the destination is sanctioned OR the fraud score is 0.8 or higher."
+                    ),
+                    "enabled": True,
+                    "execution": "server",
+                    "scope": {"step_types": ["tool"], "stages": ["pre"]},
+                    "condition": {
+                        "or": [
+                            {
+                                "selector": {"path": "input.destination_country"},
+                                "evaluator": {
+                                    "name": "regex",
+                                    "config": {
+                                        "pattern": r"^(iran|north korea|syria|cuba|crimea)$",
+                                        "flags": ["IGNORECASE"],
+                                    },
                                 },
                             },
-                        },
-                        {
-                            "selector": {"path": "input.fraud_score"},
-                            "evaluator": {
-                                "name": "regex",
-                                "config": {"pattern": r"^(0[.][89][0-9]*|1([.]0+)?)$"},
+                            {
+                                "selector": {"path": "input.fraud_score"},
+                                "evaluator": {
+                                    "name": "regex",
+                                    "config": {
+                                        "pattern": r"^(0[.][89][0-9]*|1([.]0+)?)$"
+                                    },
+                                },
                             },
-                        },
-                    ]
+                        ]
+                    },
+                    "action": {"decision": "deny"},
+                    "tags": ["demo", "galileo", "banking", "deny", "risk", "or", "pre-tool"],
                 },
-                "action": {"decision": "deny"},
-                "tags": ["demo", "galileo", "banking", "deny", "risk", "or", "pre-tool"],
-            },
-        ),
-    ]
+            ),
+        ]
+    )
+    return specs
 
 
 CONTROL_SPECS = control_specs()
