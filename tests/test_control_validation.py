@@ -5,6 +5,11 @@ import unittest
 from unittest.mock import patch
 
 from banking_streamlit_app import STREAMLIT_SCENARIOS, _scenario_failures
+from banking_streamlit_app_otel import STREAMLIT_SCENARIOS as OTEL_STREAMLIT_SCENARIOS
+from banking_streamlit_app_otel_splunk_ao import (
+    STREAMLIT_EXAMPLES as OTEL_SPLUNK_STREAMLIT_EXAMPLES,
+)
+from banking_streamlit_app_splunk_ao import STREAMLIT_EXAMPLES as SPLUNK_STREAMLIT_EXAMPLES
 from setup_controls import control_specs
 
 
@@ -32,6 +37,19 @@ class ScenarioValidationTests(unittest.TestCase):
             scenario["expected_control"],
             "demo-observe-luna-transfer-request",
         )
+
+    def test_prompt_injection_scenario_is_available_in_every_streamlit_app(self) -> None:
+        scenario_name = "Luna prompt-injection deny"
+        scenario_maps = (
+            STREAMLIT_SCENARIOS,
+            OTEL_STREAMLIT_SCENARIOS,
+            SPLUNK_STREAMLIT_EXAMPLES,
+            OTEL_SPLUNK_STREAMLIT_EXAMPLES,
+        )
+
+        for scenario_map in scenario_maps:
+            with self.subTest(scenario_map=id(scenario_map)):
+                self.assertIn(scenario_name, scenario_map)
 
     def test_logger_result_fails_without_local_or_persisted_control_spans(self) -> None:
         failures = _scenario_failures(
