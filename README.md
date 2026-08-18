@@ -280,6 +280,7 @@ cd /Users/namrataghadi/code/agent-control-galileo-e2e
 The app includes repeatable scenarios with automatic expected-result and
 control-telemetry checks for:
 
+- Luna prompt-injection denial
 - `AND + NOT` 2FA steering
 - `OR` sanctioned-country denial
 - `OR` high-fraud-score denial

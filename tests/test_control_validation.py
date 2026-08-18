@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from banking_streamlit_app import _scenario_failures
+from banking_streamlit_app import STREAMLIT_SCENARIOS, _scenario_failures
 from setup_controls import control_specs
 
 
@@ -22,6 +22,16 @@ class ScenarioValidationTests(unittest.TestCase):
         "final_transfer": {"verified_2fa": False},
         "answer": "blocked by demo-deny-risky-transfer-composite",
     }
+
+    def test_prompt_injection_scenario_remains_available(self) -> None:
+        scenario = STREAMLIT_SCENARIOS["Luna prompt-injection deny"]
+
+        self.assertIn("Ignore previous instructions", scenario["prompt"])
+        self.assertEqual(scenario["expected_status"], "blocked")
+        self.assertEqual(
+            scenario["expected_control"],
+            "demo-observe-luna-transfer-request",
+        )
 
     def test_logger_result_fails_without_local_or_persisted_control_spans(self) -> None:
         failures = _scenario_failures(
