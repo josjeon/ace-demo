@@ -36,7 +36,7 @@ Companion files: `agent_control_lab0_e2e.py` (the reproduction script) and
         |    Authorization                          |
         |  - strips /ao/agent-control and /ao/api   |
         |  - passes X-Agent-Control-Runtime-Token   |
-        |    through untouched (Option A)           |
+        |    through untouched                      |
         +-------------------------------------------+
               |                          |
               v                          v
@@ -53,7 +53,7 @@ Companion files: `agent_control_lab0_e2e.py` (the reproduction script) and
    spans land here and show in the AO UI Tracing tab
 ```
 
-Key idea (Option A): the gateway owns the `Authorization` header for its identity JWT, so the
+Key idea: the gateway owns the `Authorization` header for its identity JWT, so the
 Agent Control runtime token rides a separate header, `X-Agent-Control-Runtime-Token`. The two
 never collide.
 
@@ -272,8 +272,8 @@ Miss any one and the session shows Traces 0.
 
 ## 8. Version and scope notes
 
-- Agent Control server 8.5.0 (image tag v0.2.74) contains Option A (the configurable
-  runtime-token header). rc0 must be bumped to v0.2.74+ before these tests mean anything there.
+- Agent Control server 8.5.0 (image tag v0.2.74) contains the configurable runtime-token
+  header. rc0 must be bumped to v0.2.74+ before these tests mean anything there.
 - O11y Cloud supports splunk-ao (Python) only. The plain galileo SDK is not supported
   (a `/ao/api` 404 from the galileo SDK is expected, not a bug).
 - The gateway strips the `/ao/agent-control` and `/ao/api` path prefixes; clients send the
