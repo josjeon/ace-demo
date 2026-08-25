@@ -66,10 +66,29 @@ def _require(name: str) -> str:
 def _setup_env() -> None:
     # splunk-ao telemetry side (O11y mode)
     os.environ.setdefault("SPLUNK_AO_REALM", "lab0")
-    _require("SPLUNK_AO_O11Y_TOKEN")
-    _require("SPLUNK_AO_O11Y_API_TOKEN")
-    # agent_control (enforcement) side, sourced from AC_* to keep secrets in env
-    sf = _require("AC_SF_TOKEN")
+
+    problems = []
+
+    # all required env vars at once (not one at a time)
+    required = ["SPLUNK_AO_O11Y_TOKEN", "SPLUNK_AO_O11Y_API_TOKEN", "AC_SF_TOKEN"]
+    missing = [n for n in required if not os.environ.get(n)]
+    if missing:
+        problems.append("Missing env vars: " + ", ".join(missing)
+                        + ". See docs/04_tokens_and_env.md.")
+
+    # AC_PROJECT_ID / AC_STREAM_ID come from the setup script; guide the user there
+    if not os.environ.get("AC_PROJECT_ID") or not os.environ.get("AC_STREAM_ID"):
+        problems.append("AC_PROJECT_ID and/or AC_STREAM_ID are not set. Run "
+                        "agent_control_lab0_setup.py first and export the IDs it prints "
+                        "(see docs/03_setup_project_stream_control.md).")
+
+    if problems:
+        raise SystemExit("Preflight failed:\n  - " + "\n  - ".join(problems))
+
+    # Set AGENT_CONTROL_* env BEFORE importing agent_control. The SDK reads AGENT_CONTROL_URL
+    # at import time; if it is not set the evaluation client falls back to localhost:8000 and
+    # the control check dies with "All connection attempts failed".
+    sf = os.environ["AC_SF_TOKEN"]
     gateway = os.environ.get("AC_GATEWAY", "https://app.lab0.signalfx.com/ao/agent-control")
     os.environ.update({
         "AGENT_CONTROL_URL": gateway,
@@ -78,6 +97,17 @@ def _setup_env() -> None:
         "AGENT_CONTROL_RUNTIME_TOKEN_HEADER": "X-Agent-Control-Runtime-Token",
         "AGENT_CONTROL_RUNTIME_AUTH_MODE": "jwt",
     })
+
+    # SDKs installed (imported AFTER env is set, so agent_control picks up AGENT_CONTROL_URL)
+    try:
+        import agent_control  # noqa: F401
+    except Exception:
+        raise SystemExit('agent-control-sdk is not installed. '
+                         'Run: pip install "agent-control-sdk==8.5.0"')
+    try:
+        import splunk_ao  # noqa: F401
+    except Exception:
+        raise SystemExit('splunk-ao is not installed. Run: pip install "splunk-ao"')
 
 
 async def main() -> None:
