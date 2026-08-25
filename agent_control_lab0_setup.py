@@ -43,6 +43,60 @@ def _require(name: str) -> str:
     return v
 
 
+def _preflight() -> None:
+    """Fail early with clear guidance instead of breaking mid-run."""
+    problems = []
+
+    # 1. all required env vars at once (not one at a time)
+    required = ["SPLUNK_AO_O11Y_TOKEN", "SPLUNK_AO_O11Y_API_TOKEN", "AC_SF_TOKEN"]
+    missing = [n for n in required if not os.environ.get(n)]
+    if missing:
+        problems.append("Missing env vars: " + ", ".join(missing)
+                        + ". See docs/04_tokens_and_env.md.")
+
+    # 2. SDKs installed
+    try:
+        import splunk_ao  # noqa: F401
+    except Exception:
+        problems.append('splunk-ao is not installed. Run: pip install "splunk-ao"')
+    try:
+        import agent_control  # noqa: F401
+    except Exception:
+        problems.append('agent-control-sdk is not installed. '
+                        'Run: pip install "agent-control-sdk==8.5.0"')
+
+    if problems:
+        raise SystemExit("Preflight failed:\n  - " + "\n  - ".join(problems))
+
+    # 3. gateway reachable + SF token valid (catches wrong VPN / bad token early)
+    sf = os.environ["AC_SF_TOKEN"]
+    gateway = os.environ.get("AC_GATEWAY", "https://app.lab0.signalfx.com/ao/agent-control")
+    try:
+        status, body = _ac_request(gateway, sf, "GET", "/health")
+    except Exception as e:
+        raise SystemExit(
+            f"Cannot reach the gateway at {gateway} ({type(e).__name__}). "
+            "Check the VPN (GlobalProtect US West Full Tunnel + Aviatrix). See docs/01, docs/04.")
+    if status in (401, 403, 500):
+        raise SystemExit(
+            f"Gateway health check returned {status}. This usually means AC_SF_TOKEN is "
+            "invalid/expired or your org is not provisioned (a bad token can surface as 500 "
+            "here, not just 401). Get a fresh token per docs/04_tokens_and_env.md.")
+    if status != 200:
+        raise SystemExit(f"Gateway health check returned {status}: {body}. See docs/01, docs/04.")
+
+    # 4. feature flag on (warn only; control still works, but it will not show in the UI)
+    try:
+        api_base = gateway.rstrip("/").rsplit("/ao/", 1)[0] + "/ao/api"
+        fstatus, fbody = _ac_request(api_base, sf, "GET", "/configuration")
+        flag = (fbody or {}).get("feature_flags", {}).get("agent_control") if fstatus == 200 else None
+        if flag is False:
+            print("WARNING: feature flag agent_control is OFF for this cluster. Enforcement will "
+                  "still run, but Controls will not appear in the AO UI. See docs/02_feature_flag.md.")
+    except Exception:
+        print("WARNING: could not check the agent_control feature flag. See docs/02_feature_flag.md.")
+
+
 # The control created below: steer any tool input containing an integer >= 10000
 # (a "2FA required for large transfers" example). regex evaluator, pre stage, tool step.
 # Name is made unique per run (control names must be unique in the org).
@@ -85,9 +139,8 @@ def _ac_request(gateway: str, sf: str, method: str, path: str, body=None):
 def main() -> None:
     # splunk-ao env (project/stream creation goes through the CRUD API token)
     os.environ.setdefault("SPLUNK_AO_REALM", "lab0")
-    _require("SPLUNK_AO_O11Y_TOKEN")
-    _require("SPLUNK_AO_O11Y_API_TOKEN")
-    sf = _require("AC_SF_TOKEN")
+    _preflight()  # fails early with clear guidance if anything is missing
+    sf = os.environ["AC_SF_TOKEN"]
     gateway = os.environ.get("AC_GATEWAY", "https://app.lab0.signalfx.com/ao/agent-control")
     project_name = os.environ.get("AC_PROJECT_NAME", "qe-agent-control-e2e")
     stream_name = os.environ.get("AC_STREAM_NAME", "qe-agent-control-e2e")
