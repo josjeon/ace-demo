@@ -11,10 +11,16 @@ Miss any one and the session shows Traces 0.
       -> the step is a tool, not llm.  An llm step pulls in the Luna control,
          which errors when the Luna SLM backend is unavailable on lab0
 
-   3. set_trace_context_provider(lambda: TraceContext(trace_id, span_id))
-      -> control span shares the splunk-ao trace id.
-         get it from logger.current_parent().id AFTER start_trace
-         (splunk_ao_context.get_current_trace() returns None; do not use it)
+   3. let setup_agent_control_bridge(logger) own the trace context
+      -> the bridge installs its own trace-context provider that returns the logger's real
+         (root parent id, current parent id). Do NOT override it with a manual
+         set_trace_context_provider.
+      -> why: the bridge accepts a control event only when the event's span_id equals the
+         current parent's FULL UUID (splunk_ao bridge _matches_active_context runs both through
+         uuid.UUID). A truncated 16-hex span_id normalizes to None, never matches, and the
+         event is dropped (accepted=0, dropped=1). The full UUID matches and is accepted.
+      -> tear down with logger.disable_agent_control() then
+         agent_control.clear_trace_context_provider() after shutdown_observability().
 
    4. await agent_control.shutdown_observability()  before exit
       -> flushes the background event batcher; otherwise events drop on shutdown
