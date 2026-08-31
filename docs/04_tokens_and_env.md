@@ -10,7 +10,10 @@ They are different scopes. Do not mix them.
    API token            -> splunk-ao CRUD, project/stream lookup (SPLUNK_AO_O11Y_API_TOKEN)
 ```
 
----
+Get all three tokens from the SAME org, and make sure that org has agent-control membership.
+The control is created under the SF-token org while the project and stream are created under
+the API-token org; if they differ, bind and token-exchange fail with a misleading
+`404 Invalid API Key`. See docs/08_troubleshooting.md.
 
 ---
 
