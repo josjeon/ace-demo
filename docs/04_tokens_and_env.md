@@ -15,6 +15,15 @@ The control is created under the SF-token org while the project and stream are c
 the API-token org; if they differ, bind and token-exchange fail with a misleading
 `404 Invalid API Key`. See docs/08_troubleshooting.md.
 
+Known-good defaults (verified on lab0, 2026-08-25). Confirm membership is still current before
+relying on these:
+
+```
+   realm:  lab0
+   org:    HHLQ5TxAIAA        (the org the end-to-end flow was verified in)
+   gateway host: app.lab0.signalfx.com
+```
+
 ---
 
 ## Install and configure the app
