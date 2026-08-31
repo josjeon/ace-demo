@@ -23,9 +23,28 @@ Fix: get all three tokens (SF, ingest, API) from the SAME org in the AO UI, and 
 org has agent-control membership / is provisioned. If you have access to more than one org,
 pick the one that already shows the Agent Observability nav with Controls enabled.
 
-Quick check: `GET /ao/agent-control/api/v1/controls` with your SF token should return 200. Then
-run runtime-token-exchange for a stream you just created; if that 404s while GET /controls is
-200, your SF-token org and your stream's org do not match.
+Known-good default: realm `lab0`, org `HHLQ5TxAIAA`. This is the org the end-to-end flow was
+verified in (2026-08-25). Membership can change, so confirm it is still current rather than
+assuming it. Another org (`G_yXEGYAIAI`) was tried and did not work because it lacked
+membership; gateway auth is pre-provisioned only.
+
+Confirm your token's org matches your stream, in two calls:
+
+```
+   # 1. SF token can reach the management API (auth works at all):
+   curl -sk -H "X-SF-Token: <sf-token>" \
+     https://app.lab0.signalfx.com/ao/agent-control/api/v1/controls
+   # -> 200 with a controls list
+
+   # 2. SF token can see a stream you just created (org matches):
+   curl -sk -X POST -H "X-SF-Token: <sf-token>" -H "Content-Type: application/json" \
+     --data '{"target_type":"log_stream","target_id":"<stream-id>"}' \
+     https://app.lab0.signalfx.com/ao/agent-control/api/v1/auth/runtime-token-exchange
+   # -> 200 with a runtime_token
+```
+
+If call 1 is 200 but call 2 is 404, your SF-token org and your stream's org do not match. Fix
+the tokens, do not touch the stream.
 
 ## Control check fails with "All connection attempts failed" (localhost:8000)
 
