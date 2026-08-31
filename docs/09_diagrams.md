@@ -30,6 +30,7 @@ and the exact run you perform.
     PF1 image v0.2.74       (health -> version 8.5.0)
     PF2 Option A wired      (RUNTIME_TOKEN_HEADER env + runtime secret on pod)
     PF3 gateway host + cred (X-SF-Token) + one org for all three tokens, with membership
+        (known-good default: realm lab0, org HHLQ5TxAIAA; confirm membership is current)
 ```
 
 ## 2. The no-collision hot path (why Option A)
