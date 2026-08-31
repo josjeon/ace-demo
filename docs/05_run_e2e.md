@@ -33,6 +33,10 @@
         output: { "action": "steer", "matched": true, "confidence": 1 }
 ```
 
+The control span can appear twice: once for the pre-execution evaluation and once when the
+steer decision is recorded. Both are tagged Triggered and belong to the same control. One
+matched control, shown at two points in its lifecycle, is expected.
+
 Positive vs negative check:
 
 ```
