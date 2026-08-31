@@ -11,8 +11,6 @@
 
 ---
 
----
-
 The control examples in this doc (a Luna prompt-injection control and a regex 2FA-steer
 control) are for verifying the flow. They are not a statement of what ships at GA. A couple
 of things are still being confirmed with product:
