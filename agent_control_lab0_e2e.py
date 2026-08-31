@@ -45,8 +45,10 @@ session shows Traces 0):
   1. observability_sink_name="registered"  -> control events go to the splunk-ao bridge sink
   2. func.tool_name set before @control()  -> step is a tool, not llm (llm pulls in the
      Luna control, which errors because Luna is unavailable on lab0)
-  3. set_trace_context_provider(...) with the splunk-ao trace id  -> control span shares the
-     telemetry trace id (get it from logger.current_parent().id; get_current_trace() is None)
+  3. let setup_agent_control_bridge() own the trace context  -> it installs a provider that
+     returns the logger's real (root parent id, current parent id). Do NOT override it with a
+     manual set_trace_context_provider: the bridge accepts a control event only when the event
+     span_id equals the current parent's FULL UUID, so a truncated 16-hex span_id is dropped.
   4. await agent_control.shutdown_observability() before exit  -> flush the background events
   Also: do not use a named start_session; let splunk-ao own the session/trace.
 """
@@ -123,7 +125,6 @@ async def main() -> None:
 
     import agent_control
     from agent_control import control, ControlSteerError
-    from agent_control_telemetry.trace_context import TraceContext
     from splunk_ao.decorator import splunk_ao_context
     from splunk_ao import setup_agent_control_bridge
 
@@ -156,13 +157,16 @@ async def main() -> None:
     # Let splunk-ao own the session/trace. Do NOT use a named start_session.
     payload = f'{{"amount":{amount},"to":"{to_acct}"}}'
     logger.start_trace(input=payload, name="wire_transfer")
-
-    # gotcha #3: stitch the control span into the splunk-ao trace
     parent = logger.current_parent()
     tid = str(getattr(parent, "id", ""))
-    agent_control.set_trace_context_provider(
-        lambda: TraceContext(trace_id=tid, span_id=tid.replace("-", "")[:16])
-    )
+
+    # gotcha #3: the bridge stitches the control span into the splunk-ao trace on its own.
+    # setup_agent_control_bridge() already installed a trace-context provider that returns the
+    # logger's real (root parent id, current parent id). Do NOT override it with a manual
+    # set_trace_context_provider: the bridge only accepts a control event when the event's
+    # span_id equals the current parent's full UUID (see splunk_ao bridge _matches_active_context,
+    # which runs both through uuid.UUID). A truncated 16-hex span_id normalizes to None, never
+    # matches, and the control event is dropped (accepted=0, dropped=1). Let the bridge own it.
 
     steered = False
     try:
@@ -181,9 +185,11 @@ async def main() -> None:
 
     # gotcha #4: flush background control events before exit
     await agent_control.shutdown_observability()
-    agent_control.clear_trace_context_provider()
     logger.conclude(output="steered" if steered else "ok")
     logger.flush()
+    # Tear down the bridge, then clear the provider it installed.
+    logger.disable_agent_control()
+    agent_control.clear_trace_context_provider()
     time.sleep(3)  # give the async span exporter a moment
     print(f"INGESTED trace_id={tid} steered={steered}")
     print("Open the AO UI Tracing tab (Last 15 minutes) and inspect the newest session.")
