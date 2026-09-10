@@ -1,4 +1,4 @@
-# Runtime behavior (verified against agent-control and orbit source)
+# Runtime behavior
 
 How the SDK and server behave at runtime. See docs/01_architecture.md for the
 component map, docs/04_tokens_and_env.md for token scopes, docs/06_gotchas.md for
@@ -162,8 +162,8 @@ Controls are scoped to a target, not to an org. Every control query filters on
 `Control.namespace_key == namespace_key`, and the key comes from the
 authenticated principal and rides as a claim in the runtime token, so one
 namespace's controls are invisible to another. The `namespace_key` maps to the
-log/agent stream (per the team walkthrough, roughly project + agent stream; OSS
-defaults it to the agent name). The runtime token is also bound to a specific
+log/agent stream (roughly project + agent stream; OSS defaults it to the agent
+name). The runtime token is also bound to a specific
 `target_id`, and the exchange rejects a request whose target does not match the
 principal's. So a token can only fetch and evaluate the controls attached to its
 own stream.

@@ -178,11 +178,4 @@ Component roles, one line each:
    UI/Console   admin and viewing surface.
 ```
 
-Sources: the SDK/engine/token flows and defaults are verified against
-agent-control source; the Luna path (8), Postgres sharing, Runners/Wizard/Redis
-roles, and the admin-vs-agent API-key gap come from the Agent Control team's
-architecture walkthrough (Sept 2026). Some component internals were described
-live and may lag the code; treat the walkthrough-sourced arrows as the team's
-current design, not a source read.
-
 ---
