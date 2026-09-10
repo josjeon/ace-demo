@@ -88,24 +88,24 @@ Numbers on the arrows are explained under the diagram.
    |  - evaluates the control set  |  write  |  bindings,      |
    |  - execution=sdk local /      |         |  agents         |
    |    execution=server here      |         +-----------------+
-   +--+--------+----------------+--+
-      |        ^                ^
-   (4)|     (5)|             (7)|  authz check
-      v        |                |  (may control call)
-   +--------+  |             +--------+        +-------------+   +----------+
-   |  API   |--+             | Authz  |        | Runners-API |   |  Wizard  |
-   |        |  (6) flags,    |        |        | (eval/score |   | (scorer  |
-   |  CRUD, |  config,       | RBAC:  |        |  execution) |   |  authoring)
-   |  /ao/  |  control CRUD  | admin  |        +------+------+   +----------+
-   |  api   |                | vs     |               |
-   +---+----+                | runtime|         (8)   v
-       ^                     +---+----+        +-------------+
-    (9)|                         ^             |   Redis     |
-       |                      (7)|             | cache +     |
-   +---+----+   (10)         +---+----+        | event queue |
-   | UI     |<---------------|Console |        +-------------+
-   |        |                |  UI    |
-   +--------+                +--------+
+   +--+--------+-------+-----------+--+   (8)   +-------------+
+      |        ^       |           ^  |-------->| Runners-API |
+   (4)|     (5)|    (8)|        (7)|  |         | (eval/score |
+      v        |       v           |  |         |  execution) |
+   +--------+  |    +-------+    +--+--+--+      +-------------+
+   |  API   |--+    | Redis |    | Authz  |
+   |        |  (6)  | cache+|    |        |      +----------+
+   |  CRUD, | flags | event |    | RBAC:  |      |  Wizard  |
+   |  /ao/  | config| queue |    | admin  |      | (scorer  |
+   |  api   |       +-------+    | vs     |      |  authoring)
+   +---+----+                    | runtime|      +----------+
+       ^                         +---+----+
+    (9)|                             ^
+       |                          (7)|
+   +---+----+   (10)            +----+---+
+   | UI     |<------------------|Console |
+   |        |                   |  UI    |
+   +--------+                   +--------+
 ```
 
 Critical arrows:
@@ -140,11 +140,12 @@ Critical arrows:
                     of admin vs runtime scope is a documented direction; verify the
                     exact enforcement points before relying on them.)
 
-   (8) Runners-API -> Redis   eval/scorer execution. Runners-API runs scorer and
-                    metric jobs (the separate eval rollup, not the Controls chart).
-                    Redis is both the AO cache (ElastiCache; the ~5 min Controls
-                    chart cache lives here) and the control-event queue
-                    (RedisEventIngestor pushes control events for async workers).
+   (8) ACS -> Runners-API and ACS/API -> Redis   in the O11y embed, the istio
+                    egress config allows agent-control and api to reach
+                    runners-api (eval/scorer execution) and Redis. Redis is the AO
+                    cache (ElastiCache; the ~5 min Controls-chart cache) and the
+                    agent-control control-event queue (RedisEventIngestor).
+                    Whether Runners-API itself calls Redis is not verified here.
 
    (9) API <-> UI    the UI reads spans, controls, and chart data from the API.
 
@@ -160,17 +161,33 @@ Component roles, one line each:
                 span readback, the Controls-chart rollup query.
    Authz        RBAC and tenant isolation (namespace_key, target_id).
    Postgres     source of truth for controls, bindings, agents.
-   Runners-API  runs scorer/eval jobs (produces eval metric scores).
-   Wizard       authors scorers/metrics that evaluators (e.g. galileo.luna) use.
-                Not the control engine; a producer of scorers the controls consume.
+   Runners-API  runs scorer/eval jobs (inferred: produces eval metric scores).
+   Wizard       inferred scorer/metric authoring (enabled: false on us1). Role
+                taken from the name and the hide_wizard_scorers flag, not wiring.
    Redis        AO cache (Controls-chart rollup, ~5 min TTL) + control-event queue.
    UI/Console   admin and viewing surface.
 ```
 
-Note on what is verified vs. inferred: the ACS, API, Postgres, Authz, Redis
-roles and the token/isolation flows are confirmed against agent-control and
-orbit source. The exact Runners-API and Wizard wiring is taken from the OnPrem
-component diagram and the service definitions in the helm values; treat those two
-boxes' internal arrows as approximate.
+What is verified vs. guessed (read before trusting the arrows):
+
+```
+   verified against source:
+     - ACS token flow (1,2), ACS <-> Postgres (3), tenant isolation keys
+       (namespace_key, target_id): agent-control SDK/engine/server
+     - Redis roles: RedisEventIngestor in agent-control server; GALILEO_REDIS_*
+       (ElastiCache) in the O11y helm values
+     - who MAY call runners-api and Redis: istio egress allow-lists in
+       us1/o11y-ao/ao-stack.yaml (agent-control and api egress to both)
+
+   inferred, NOT verified:
+     - Runners-API's own outbound calls (e.g. Runners-API -> Redis). Only the
+       inbound "ACS/API may call runners-api" is backed.
+     - Wizard's connections. ao-stack defines a wizard service (enabled: false on
+       us1); its "scorer authoring" role is inferred from the name and the
+       hide_wizard_scorers flag, not from any wiring. No Wizard arrow is drawn.
+     - source mixing: the hand-drawn box diagram this is based on is Galileo
+       OnPrem; the egress/Redis facts above are from the O11y embed (o11y-ao).
+       They are assumed similar but the OnPrem topology was not checked.
+```
 
 ---
