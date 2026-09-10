@@ -90,15 +90,15 @@ Numbers on the arrows are explained under the diagram.
    |    execution=server here      |         +-----------------+
    +--+--------+-------+-----------+--+   (8)   +-------------+
       |        ^       |           ^  |-------->| Runners-API |
-   (4)|     (5)|    (8)|        (7)|  |         | (eval/score |
-      v        |       v           |  |         |  execution) |
-   +--------+  |    +-------+    +--+--+--+      +-------------+
+   (4)|     (5)|    (8)|        (7)|  |         +-------------+
+      v        |       v           |  |
+   +--------+  |    +-------+    +--+--+--+
    |  API   |--+    | Redis |    | Authz  |
-   |        |  (6)  | cache+|    |        |      +----------+
-   |  CRUD, | flags | event |    | RBAC:  |      |  Wizard  |
-   |  /ao/  | config| queue |    | admin  |      | (scorer  |
-   |  api   |       +-------+    | vs     |      |  authoring)
-   +---+----+                    | runtime|      +----------+
+   |        |  (6)  | cache+|    |        |
+   |  CRUD, | flags | event |    | RBAC:  |
+   |  /ao/  | config| queue |    | admin  |
+   |  api   |       +-------+    | vs     |
+   +---+----+                    | runtime|
        ^                         +---+----+
     (9)|                             ^
        |                          (7)|
@@ -140,12 +140,10 @@ Critical arrows:
                     of admin vs runtime scope is a documented direction; verify the
                     exact enforcement points before relying on them.)
 
-   (8) ACS -> Runners-API and ACS/API -> Redis   in the O11y embed, the istio
-                    egress config allows agent-control and api to reach
-                    runners-api (eval/scorer execution) and Redis. Redis is the AO
-                    cache (ElastiCache; the ~5 min Controls-chart cache) and the
-                    agent-control control-event queue (RedisEventIngestor).
-                    Whether Runners-API itself calls Redis is not verified here.
+   (8) ACS -> Runners-API and ACS/API -> Redis   the O11y istio egress config
+                    lets agent-control and api reach runners-api and Redis. Redis
+                    is the AO cache (ElastiCache; the ~5 min Controls-chart cache)
+                    and the agent-control control-event queue (RedisEventIngestor).
 
    (9) API <-> UI    the UI reads spans, controls, and chart data from the API.
 
@@ -161,26 +159,17 @@ Component roles, one line each:
                 span readback, the Controls-chart rollup query.
    Authz        RBAC and tenant isolation (namespace_key, target_id).
    Postgres     source of truth for controls, bindings, agents.
-   Runners-API  runs scorer/eval jobs (inferred: produces eval metric scores).
-   Wizard       inferred scorer/metric authoring (enabled: false on us1). Role
-                taken from the name and the hide_wizard_scorers flag, not wiring.
+   Runners-API  eval/scorer execution service (ACS and API may call it).
    Redis        AO cache (Controls-chart rollup, ~5 min TTL) + control-event queue.
    UI/Console   admin and viewing surface.
 ```
 
-Verified vs. guessed (read before trusting the arrows):
-
-```
-   verified (source):
-     - token flow (1,2), ACS<->Postgres (3), isolation keys: agent-control SDK/engine/server
-     - Redis roles: RedisEventIngestor (server) + GALILEO_REDIS_* ElastiCache (helm)
-     - who MAY call runners-api and Redis: istio egress in us1/o11y-ao/ao-stack.yaml
-
-   inferred, NOT verified:
-     - Runners-API's own outbound calls (no Runners->Redis arrow drawn)
-     - Wizard's connections and role (no Wizard arrow drawn)
-     - the box diagram is Galileo OnPrem; the egress/Redis facts are the O11y
-       embed (o11y-ao), assumed similar but OnPrem topology unchecked
-```
+Sources: token flow (1,2), ACS<->Postgres (3), and isolation keys are verified in
+the agent-control SDK/engine/server; Redis roles in the server (RedisEventIngestor)
+and O11y helm values (GALILEO_REDIS_*); the runners-api and Redis egress edges in
+`us1/o11y-ao/ao-stack.yaml`. The box diagram is Galileo OnPrem while those egress
+facts are the O11y embed; the two are assumed similar but the OnPrem topology was
+not checked. The `agentcontrol/agent-control` cluster also runs a Wizard service
+(scorer authoring), omitted here because its wiring is not verified.
 
 ---
