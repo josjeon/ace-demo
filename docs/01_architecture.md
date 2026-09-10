@@ -88,10 +88,10 @@ Numbers on the arrows are explained under the diagram.
    |  - evaluates the control set  |  write  |  bindings,      |
    |  - execution=sdk local /      |         |  agents         |
    |    execution=server here      |         +-----------------+
-   +--+--------+-------+-----------+--+   (8)   +-------------+
-      |        ^       |           ^  |-------->| Runners-API |
-   (4)|     (5)|    (8)|        (7)|  |         +-------------+
-      v        |       v           |  |
+   +--+--------+-------+-----------+--+  (8) +-----------+ (8) +--------+ (8) +--------+
+      |        ^       |           ^  |----->| Runners-  |---->| Redis  |---->| Wizard |
+   (4)|     (5)|    (8)|        (7)|  |      |   API     |<----| (pod   |<----| (GPU   |
+      v        |       v           |  |      +-----------+ pick+--------+ run +--------+
    +--------+  |    +-------+    +--+--+--+
    |  API   |--+    | Redis |    | Authz  |
    |        |  (6)  | cache+|    |        |
@@ -111,39 +111,48 @@ Numbers on the arrows are explained under the diagram.
 Critical arrows:
 
 ```
-   (1) SDK -> ACS   auth with the Galileo API key (X-SF-Token in the O11y embed).
-                    This is the ONLY credential the agent app holds. In the O11y
-                    embed it must carry API scope for the gateway; a separate
-                    INGEST token handles span export (docs/04_tokens_and_env.md).
+   (1) SDK -> ACS   auth with the Galileo API key (X-SF-Token in the O11y embed),
+                    the ONLY credential the agent app holds. On first init ACS
+                    validates it against the API service (which calls Authz), then
+                    mints a JWT. In the O11y embed the token must carry API scope
+                    for the gateway; a separate INGEST token handles span export
+                    (docs/04_tokens_and_env.md).
 
-   (2) ACS -> SDK   returns a runtime JWT: scope runtime.use, bound to
-                    (namespace_key, target_id=log_stream), expires in minutes.
-                    The SDK sends it back on X-Agent-Control-Runtime-Token for
-                    each /evaluation call, never on Authorization.
+   (2) ACS -> SDK   returns a runtime JWT (scope runtime.use, target-bound, short
+                    lived). The SDK caches it and sends it back on
+                    X-Agent-Control-Runtime-Token for later calls, never on
+                    Authorization. ACS refreshes it on the configured interval.
 
    (3) ACS -> Postgres    control definitions, bindings, and agent registrations.
-                    initAgent reads the target's bound controls from here; the
-                    60s refresh loop re-reads them.
+                    initAgent looks up the controls bound to the target
+                    (log/agent stream) here; the 60s refresh re-reads them.
+                    Postgres is Galileo's shared instance; agent-control keeps its
+                    own database inside it.
 
-   (4) API -> ACS / (5) ACS -> API   the app API and ACS exchange control CRUD,
-                    flags, and configuration. Creating or editing a control goes
-                    through the API; ACS consumes the resulting definitions.
+   (4) API -> ACS / (5) ACS -> API   control CRUD and config. Creating or editing
+                    a control goes through the API (or, on init, ACS validates the
+                    API key via the API service). ACS consumes the definitions.
 
    (6) UI/Console -> API   admins manage controls and view results through the
-                    API. Console UI is the OnPrem console; in the O11y embed this
-                    is the AO UI.
+                    API. Console UI is the OnPrem console; the O11y embed uses the
+                    AO UI.
 
-   (7) ACS -> Authz and UI -> Authz   authorization. Authz enforces who may do
-                    what: only admins mutate controls, runtime principals may only
-                    fetch and evaluate their assigned controls. Isolation keys are
-                    namespace_key (org/tenant) and target_id (stream). (RBAC split
-                    of admin vs runtime scope is a documented direction; verify the
-                    exact enforcement points before relying on them.)
+   (7) API -> Authz   authorization. Authz enforces who may do what: admins
+                    mutate controls, runtime principals only fetch and evaluate
+                    their assigned controls. (Per-agent / per-role API keys are a
+                    requested feature, not yet built; verify before relying on the
+                    admin-vs-runtime split.)
 
-   (8) ACS -> Runners-API and ACS/API -> Redis   the O11y istio egress config
-                    lets agent-control and api reach runners-api and Redis. Redis
-                    is the AO cache (ElastiCache; the ~5 min Controls-chart cache)
-                    and the agent-control control-event queue (RedisEventIngestor).
+   (8) Luna path (execution=server): ACS -> Runners-API -> Redis -> Wizard.
+                    ACS has a Luna client; it calls runners-api, which fetches the
+                    scorer metadata from Postgres, checks Redis for an available
+                    Wizard pod, forwards the request to that Wizard pod (scorer
+                    runs on GPU), then applies the control's threshold/operator and
+                    returns a match/no-match. ACS never sees the raw metric value;
+                    the numeric comparison happens in runners-api. Only ACS/API
+                    reach runners-api and Redis (O11y egress config). Redis is also
+                    the AO cache (~5 min Controls-chart TTL) and the agent-control
+                    control-event queue (RedisEventIngestor).
 
    (9) API <-> UI    the UI reads spans, controls, and chart data from the API.
 
@@ -153,23 +162,27 @@ Critical arrows:
 Component roles, one line each:
 
 ```
-   ACS          the enforcement engine: mints runtime tokens, evaluates controls,
-                returns steer/deny/allow. What the SDK talks to.
-   API          app API: control CRUD, feature flags, /ao/api/configuration,
-                span readback, the Controls-chart rollup query.
-   Authz        RBAC and tenant isolation (namespace_key, target_id).
-   Postgres     source of truth for controls, bindings, agents.
-   Runners-API  eval/scorer execution service (ACS and API may call it).
-   Redis        AO cache (Controls-chart rollup, ~5 min TTL) + control-event queue.
+   ACS          the enforcement engine (agent control server): mints runtime
+                tokens, runs the engine, aggregates control results into a final
+                verdict. What the SDK talks to.
+   API          app API: control CRUD, feature flags, /ao/api/configuration, span
+                readback, the Controls-chart rollup query, and API-key validation.
+   Authz        RBAC and tenant isolation (namespace/stream).
+   Postgres     shared Galileo instance; agent-control's own DB holds controls,
+                bindings, agents; scorer metadata lives in a separate DB.
+   Runners-API  schedules/runs scorers; applies the Luna threshold and returns a
+                decision (not the raw score) to ACS.
+   Wizard       runs Luna/SLM scorers on GPU. Redis tracks available Wizard pods.
+   Redis        Wizard pod selection + AO cache (~5 min Controls-chart TTL) +
+                control-event queue.
    UI/Console   admin and viewing surface.
 ```
 
-Sources: token flow (1,2), ACS<->Postgres (3), and isolation keys are verified in
-the agent-control SDK/engine/server; Redis roles in the server (RedisEventIngestor)
-and O11y helm values (GALILEO_REDIS_*); the runners-api and Redis egress edges in
-`us1/o11y-ao/ao-stack.yaml`. The box diagram is Galileo OnPrem while those egress
-facts are the O11y embed; the two are assumed similar but the OnPrem topology was
-not checked. The `agentcontrol/agent-control` cluster also runs a Wizard service
-(scorer authoring), omitted here because its wiring is not verified.
+Sources: the SDK/engine/token flows and defaults are verified against
+agent-control source; the Luna path (8), Postgres sharing, Runners/Wizard/Redis
+roles, and the admin-vs-agent API-key gap come from the Agent Control team's
+architecture walkthrough (Sept 2026). Some component internals were described
+live and may lag the code; treat the walkthrough-sourced arrows as the team's
+current design, not a source read.
 
 ---

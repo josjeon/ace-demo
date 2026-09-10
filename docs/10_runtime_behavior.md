@@ -71,10 +71,14 @@ Prefer `execution: sdk` for controls that must evaluate reliably in isolation.
 
 `init()` calls `initAgent`, which returns the controls bound to the target and
 caches them. A background thread re-pulls them every
-`policy_refresh_interval_seconds` (default 60s), so a control change in the UI
-takes effect within about a minute without a restart. Set the interval to 0 to
-disable the loop. A failed refresh logs and keeps the existing cache, so a
-refresh outage leaves controls stale rather than blocking.
+`policy_refresh_interval_seconds` (default 60s; hard-coded, not an env var), so a
+control change in the UI takes effect within about a minute without a restart.
+Set the interval to 0 to disable the loop. A failed refresh logs and keeps the
+existing cache, so a refresh outage leaves controls stale rather than blocking.
+
+Only the SDK caches. Disabling an `execution: sdk` control takes up to the
+refresh interval to take effect; disabling an `execution: server` control is
+immediate, because the server reads the latest state from Postgres per request.
 
 For `initAgent` to return the bound control, the agent must declare the guarded
 step at init (`steps=[{"type": "tool", "name": "..."}]`). Without it the cache
@@ -154,18 +158,15 @@ raising.
 
 ## Multi-tenancy isolation
 
-Two levels, both enforced server-side:
-
-```
-   namespace_key (org/tenant):  every control query filters on
-                                Control.namespace_key == namespace_key.
-                                The key comes from the authenticated principal and
-                                is a claim in the runtime token, so one namespace's
-                                controls are invisible to another.
-   target_id (log stream):      the runtime token is bound to a stream, and the
-                                exchange rejects a request whose target does not
-                                match the principal's.
-```
+Controls are scoped to a target, not to an org. Every control query filters on
+`Control.namespace_key == namespace_key`, and the key comes from the
+authenticated principal and rides as a claim in the runtime token, so one
+namespace's controls are invisible to another. The `namespace_key` maps to the
+log/agent stream (per the team walkthrough, roughly project + agent stream; OSS
+defaults it to the agent name). The runtime token is also bound to a specific
+`target_id`, and the exchange rejects a request whose target does not match the
+principal's. So a token can only fetch and evaluate the controls attached to its
+own stream.
 
 ## Default timeouts and limits
 
