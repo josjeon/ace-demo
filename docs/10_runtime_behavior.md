@@ -1,9 +1,8 @@
 # Runtime behavior (verified against agent-control and orbit source)
 
-How the SDK and server behave at runtime: when an evaluation fires, what happens
-with multiple controls, how it fails, and how a control decision becomes a chart.
-For the component map and cluster diagram see docs/01_architecture.md; for token
-scopes see docs/04_tokens_and_env.md; for wiring mistakes see docs/06_gotchas.md.
+How the SDK and server behave at runtime. See docs/01_architecture.md for the
+component map, docs/04_tokens_and_env.md for token scopes, docs/06_gotchas.md for
+wiring mistakes.
 
 ## When an evaluation fires
 
@@ -49,17 +48,11 @@ How the engine sets `is_safe`:
    otherwise      -> is_safe = true   (pass)
 ```
 
-The important case is an erroring deny control: it fails closed and blocks. An
-erroring steer control does not change `is_safe` at the engine level.
+The `integrations/_core.py` helper, however, raises on any non-empty
+`result.errors`, so through that path a steer error also blocks. Engine and
+helper disagree; steer-error behavior depends on the enforcement path.
 
-Caveat on the enforcement path: the `integrations/_core.py` helper raises on any
-non-empty `result.errors`, so through that path even a steer error blocks. The
-engine (non-blocking steer errors) and that helper (raise on any error) disagree,
-so steer-error behavior depends on which enforcement path you use. Verify against
-your integration before relying on it.
-
-Evaluation order does not matter, outcome type does. With several
-`execution: server` controls on a stream, a deny control that errors blocks the
+Order does not matter, outcome type does. A deny control that errors blocks the
 step, so availability is only as good as the flakiest deny control.
 
 ## Failure behavior: fail-closed
@@ -69,12 +62,10 @@ propagates and the step is blocked. Agent Control is a hard dependency in the
 request path when a server-side control applies. A local `execution: sdk` control
 that already decides `not is_safe` short-circuits without a server call.
 
-A server-side control whose backend is unreachable (for example a Galileo scorer
-that is down) does not fail cleanly. It hangs until the evaluator timeout, then
-surfaces as an error. Whether that error blocks depends on the action: a deny
-control's error fails closed and blocks; a steer control's error is non-blocking
-at the engine level. Prefer `execution: sdk` for controls that must evaluate
-reliably in an isolated environment.
+A server-side control with an unreachable backend (e.g. a down Galileo scorer)
+hangs until the evaluator timeout, then surfaces as an error. Whether that blocks
+follows the rule above: deny errors block, steer errors do not (at the engine).
+Prefer `execution: sdk` for controls that must evaluate reliably in isolation.
 
 ## Control cache and refresh
 
@@ -86,12 +77,10 @@ disable the loop. A failed refresh logs and keeps the existing cache, so a
 refresh outage leaves controls stale rather than blocking.
 
 For `initAgent` to return the bound control, the agent must declare the guarded
-step at init (`steps=[{"type": "tool", "name": "..."}]`). Without a matching step
-the cache stays empty. When the cache is empty the SDK makes no server call and
-the step returns `is_safe=true`: it passes silently. A misconfigured init
-(missing step declaration) therefore fails open, not closed, which is the
-dangerous mode. This is the same root cause as gotcha 2 in docs/06_gotchas.md,
-seen from the init side.
+step at init (`steps=[{"type": "tool", "name": "..."}]`). Without it the cache
+stays empty, and an empty cache means no server call and `is_safe=true`: the step
+passes silently. So a missing step declaration fails OPEN, not closed. Same root
+cause as gotcha 2 in docs/06_gotchas.md, from the init side.
 
 ## From control span to the Controls chart
 
@@ -112,15 +101,11 @@ Selector Path, Action, Matched). Results are bucketed and cached with a five
 minute TTL. The chart counts executions, not unique controls, so a control that
 fires twelve times shows twelve.
 
-Two consequences worth knowing:
+Consequences: more control spans move the chart (it is a live count); beyond span
+indexing lag it can trail another ~5 min from the cache.
 
-```
-   sending more control spans moves the chart (it is a live count)
-   beyond span indexing lag, the chart can trail another ~5 min (rollup cache)
-```
-
-Scorer and eval metrics use a separate rollup driven by a compute pipeline that
-ingest triggers over Kafka or Celery. The Controls chart does not use it.
+Scorer/eval metrics use a separate rollup (a compute pipeline ingest triggers
+over Kafka or Celery). The Controls chart does not use it.
 
 ## Two ways to render the control span
 
@@ -132,19 +117,18 @@ ingest triggers over Kafka or Celery. The Controls chart does not use it.
                                   span if the ingest build lacks AC OTEL support.
 ```
 
-A standalone-emitted control span has correct output (action, matched,
-confidence) but a blank Input Text, because the input does not persist onto the
-control span through hydration. The prompt is still visible at the
-workflow/session level. To populate the control span's own input, emit it from
-inside the app's real trace (nested under the app's llm span) rather than
-hydrating it separately.
+A standalone-hydrated control span has correct output (action, matched,
+confidence) but a blank Input Text: the input does not persist onto it. The
+prompt is still visible at the workflow/session level. To populate the control
+span's own input, emit it from inside the app's real trace (nested under the
+app's llm span), not by hydrating it separately.
 
 ## Framework integration
 
 The SDK ships plugins for Strands and Google ADK plus a framework-agnostic
-`@control()` decorator, and there is a LangChain example under `examples/`.
-`init()` connects the SDK to ACS and registers the agent; it does not wire any
-framework. Attaching the plugin is a separate step, and it differs by framework.
+`@control()` decorator (a LangChain example is under `examples/`). `init()`
+connects to ACS and registers the agent; it does not wire any framework.
+Attaching the plugin is separate and differs by framework.
 
 Google ADK:
 

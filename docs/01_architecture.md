@@ -168,26 +168,19 @@ Component roles, one line each:
    UI/Console   admin and viewing surface.
 ```
 
-What is verified vs. guessed (read before trusting the arrows):
+Verified vs. guessed (read before trusting the arrows):
 
 ```
-   verified against source:
-     - ACS token flow (1,2), ACS <-> Postgres (3), tenant isolation keys
-       (namespace_key, target_id): agent-control SDK/engine/server
-     - Redis roles: RedisEventIngestor in agent-control server; GALILEO_REDIS_*
-       (ElastiCache) in the O11y helm values
-     - who MAY call runners-api and Redis: istio egress allow-lists in
-       us1/o11y-ao/ao-stack.yaml (agent-control and api egress to both)
+   verified (source):
+     - token flow (1,2), ACS<->Postgres (3), isolation keys: agent-control SDK/engine/server
+     - Redis roles: RedisEventIngestor (server) + GALILEO_REDIS_* ElastiCache (helm)
+     - who MAY call runners-api and Redis: istio egress in us1/o11y-ao/ao-stack.yaml
 
    inferred, NOT verified:
-     - Runners-API's own outbound calls (e.g. Runners-API -> Redis). Only the
-       inbound "ACS/API may call runners-api" is backed.
-     - Wizard's connections. ao-stack defines a wizard service (enabled: false on
-       us1); its "scorer authoring" role is inferred from the name and the
-       hide_wizard_scorers flag, not from any wiring. No Wizard arrow is drawn.
-     - source mixing: the hand-drawn box diagram this is based on is Galileo
-       OnPrem; the egress/Redis facts above are from the O11y embed (o11y-ao).
-       They are assumed similar but the OnPrem topology was not checked.
+     - Runners-API's own outbound calls (no Runners->Redis arrow drawn)
+     - Wizard's connections and role (no Wizard arrow drawn)
+     - the box diagram is Galileo OnPrem; the egress/Redis facts are the O11y
+       embed (o11y-ao), assumed similar but OnPrem topology unchecked
 ```
 
 ---
